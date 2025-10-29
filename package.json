@@ -1,0 +1,6 @@
+{
+  "name": "drive-base64-converter",
+  "version": "1.0.0",
+  "private": true,
+  "engines": { "node": ">=18" }
+}
