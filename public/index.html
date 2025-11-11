@@ -23,8 +23,35 @@
           </div>
         </div>
         <div class="top-bar__actions">
-          <button id="open-upload" class="btn btn-solid" type="button">ファイルをアップロード</button>
-          <button id="open-store" class="btn btn-outline" type="button">ストアを作成</button>
+          <div class="action-group">
+            <button id="open-upload" class="btn btn-solid" type="button">ファイルをアップロード</button>
+            <button id="open-store" class="btn btn-outline" type="button">ストアを作成</button>
+          </div>
+          <div class="auth-cluster">
+            <button id="auth-trigger" class="btn btn-outline" type="button">ログイン</button>
+            <div id="auth-user" class="auth-user" hidden>
+              <button
+                id="auth-user-button"
+                class="user-chip"
+                type="button"
+                aria-haspopup="true"
+                aria-expanded="false"
+              >
+                <span id="auth-user-initial" class="user-chip__initial" aria-hidden="true">U</span>
+                <span id="auth-user-label" class="user-chip__label">User</span>
+                <span class="user-chip__caret" aria-hidden="true">▾</span>
+              </button>
+              <div id="auth-menu" class="auth-menu" role="menu">
+                <div class="auth-menu__header">
+                  <p id="auth-menu-name" class="auth-menu__name"></p>
+                  <p id="auth-menu-email" class="auth-menu__email"></p>
+                </div>
+                <button id="auth-menu-logout" class="auth-menu__item" type="button" role="menuitem">
+                  ログアウト
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -192,6 +219,86 @@
           <button id="submit-upload" class="btn btn-solid" type="submit" disabled>アップロード</button>
         </footer>
       </form>
+    </dialog>
+
+    <dialog id="auth-dialog" class="modal">
+      <div class="modal__surface auth-surface">
+        <header class="modal__header">
+          <h2>アカウント</h2>
+          <button class="btn btn-icon" type="button" data-close-dialog="auth-dialog" aria-label="閉じる">×</button>
+        </header>
+        <div class="modal__body auth-body">
+          <div class="auth-tabs" role="tablist">
+            <button
+              type="button"
+              class="auth-tab is-active"
+              role="tab"
+              aria-selected="true"
+              data-auth-tab="login"
+            >
+              ログイン
+            </button>
+            <button type="button" class="auth-tab" role="tab" aria-selected="false" data-auth-tab="register">
+              新規登録
+            </button>
+          </div>
+
+          <section class="auth-panel is-active" data-auth-panel="login" role="tabpanel">
+            <p class="modal__intro">
+              既存のスタッフはメールアドレスまたは Google アカウントでログインできます。
+            </p>
+            <button id="google-login" class="btn btn-solid btn-google" type="button">
+              <span class="btn-google__icon" aria-hidden="true">G</span>
+              <span>Google でログイン</span>
+            </button>
+            <p id="google-hint" class="field-hint"></p>
+            <form id="login-form" class="auth-form" autocomplete="off">
+              <label class="field">
+                <span class="field__label">メールアドレス</span>
+                <input type="email" name="email" id="login-email" required />
+              </label>
+              <label class="field">
+                <span class="field__label">パスワード</span>
+                <input type="password" name="password" id="login-password" required minlength="6" />
+              </label>
+              <button class="btn btn-solid" type="submit">メールアドレスでログイン</button>
+            </form>
+          </section>
+
+          <section class="auth-panel" data-auth-panel="register" role="tabpanel" hidden>
+            <p class="modal__intro">
+              新しい事業所を登録する場合は、基本情報とスタッフ名を入力してください。
+            </p>
+            <form id="register-form" class="auth-form" autocomplete="off">
+              <label class="field">
+                <span class="field__label">氏名</span>
+                <input type="text" name="displayName" id="register-name" required />
+              </label>
+              <label class="field">
+                <span class="field__label">メールアドレス</span>
+                <input type="email" name="email" id="register-email" required />
+              </label>
+              <label class="field">
+                <span class="field__label">パスワード</span>
+                <input type="password" name="password" id="register-password" required minlength="6" />
+              </label>
+              <label class="field">
+                <span class="field__label">企業 / 組織名</span>
+                <input type="text" name="organizationName" id="register-organization" placeholder="例: デモ株式会社" />
+              </label>
+              <label class="field">
+                <span class="field__label">事業所名</span>
+                <input type="text" name="officeName" id="register-office" placeholder="例: 東京本社" />
+              </label>
+              <button class="btn btn-solid" type="submit">アカウントを作成</button>
+              <p class="field-hint">登録後に確認メールが届く場合があります。</p>
+            </form>
+          </section>
+        </div>
+        <footer class="modal__footer auth-footer">
+          <p id="auth-feedback" class="form-error" role="alert"></p>
+        </footer>
+      </div>
     </dialog>
 
     <template id="message-template">

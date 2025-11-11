@@ -21,6 +21,12 @@ const sessionState = {
   threadId: null,
 };
 
+const authState = {
+  user: null,
+  staff: null,
+  tokens: null,
+};
+
 (async () => {
   await knowledge.init();
   fileSearch.setApiKey(knowledge.apiKey);
@@ -48,6 +54,203 @@ server.listen(PORT, () => {
 });
 
 async function handleApi(req, res, url) {
+  if (req.method === 'GET' && url.pathname === '/api/auth/state') {
+    const payload = await buildAuthPayload();
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(payload));
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/auth/login/google') {
+    const urlValue = supabase.buildGoogleOAuthUrl({ redirectTo: process.env.SUPABASE_GOOGLE_REDIRECT_URL });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(
+      JSON.stringify({
+        enabled: Boolean(urlValue),
+        url: urlValue,
+      })
+    );
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/login-email') {
+    try {
+      const payload = await readJson(req);
+      const result = await supabase.signInWithPassword({
+        email: payload.email,
+        password: payload.password,
+      });
+
+      if (!result.staff) {
+        throw new Error('スタッフ情報が見つかりません。管理者にお問い合わせください。');
+      }
+
+      authState.user = {
+        id: result.user?.id || result.staff.userId || null,
+        email: result.user?.email || payload.email,
+        displayName:
+          result.user?.user_metadata?.full_name ||
+          result.user?.user_metadata?.display_name ||
+          result.staff.displayName ||
+          payload.email,
+      };
+      authState.staff = {
+        id: result.staff.id,
+        email: result.staff.email,
+        displayName: result.staff.displayName,
+        officeId: result.staff.officeId,
+        officeName: result.staff.officeName,
+        organizationId: result.staff.organizationId,
+        organizationName: result.staff.organizationName,
+        role: result.staff.role,
+      };
+      authState.tokens = result.session
+        ? {
+            accessToken: result.session.access_token,
+            refreshToken: result.session.refresh_token || null,
+            expiresIn: result.session.expires_in || null,
+            tokenType: result.session.token_type || 'bearer',
+          }
+        : null;
+
+      syncSessionWithAuth();
+
+      if (supabase.isConfigured() && authState.staff?.id) {
+        supabase
+          .recordAuthEvent({ staffId: authState.staff.id, type: 'login' })
+          .catch((err) => console.error('Supabase auth event error:', err.message));
+      }
+
+      const [authPayload, sessionPayload] = await Promise.all([
+        buildAuthPayload(),
+        buildSessionPayload(),
+      ]);
+
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(
+        JSON.stringify({
+          auth: authPayload,
+          session: sessionPayload,
+        })
+      );
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: err.message || 'ログインに失敗しました。' }));
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/register-email') {
+    try {
+      const payload = await readJson(req);
+      const result = await supabase.signUpWithPassword({
+        email: payload.email,
+        password: payload.password,
+        displayName: payload.displayName,
+        organizationName: payload.organizationName,
+        officeName: payload.officeName,
+      });
+
+      let statusCode = 200;
+
+      if (!result.confirmationRequired && result.staff) {
+        authState.user = {
+          id: result.user?.id || result.staff.userId || null,
+          email: result.user?.email || payload.email,
+          displayName:
+            result.user?.user_metadata?.full_name ||
+            result.user?.user_metadata?.display_name ||
+            result.staff.displayName ||
+            payload.displayName ||
+            payload.email,
+        };
+        authState.staff = {
+          id: result.staff.id,
+          email: result.staff.email,
+          displayName: result.staff.displayName,
+          officeId: result.staff.officeId,
+          officeName: result.staff.officeName,
+          organizationId: result.staff.organizationId,
+          organizationName: result.staff.organizationName,
+          role: result.staff.role,
+        };
+        authState.tokens = result.session
+          ? {
+              accessToken: result.session.access_token,
+              refreshToken: result.session.refresh_token || null,
+              expiresIn: result.session.expires_in || null,
+              tokenType: result.session.token_type || 'bearer',
+            }
+          : null;
+        syncSessionWithAuth();
+        if (supabase.isConfigured() && authState.staff?.id) {
+          supabase
+            .recordAuthEvent({ staffId: authState.staff.id, type: 'login' })
+            .catch((err) => console.error('Supabase auth event error:', err.message));
+        }
+      } else {
+        statusCode = 202;
+        authState.user = null;
+        authState.staff = null;
+        authState.tokens = null;
+        await resetSessionAfterLogout();
+      }
+
+      const [authPayload, sessionPayload] = await Promise.all([
+        buildAuthPayload(),
+        buildSessionPayload(),
+      ]);
+
+      res.writeHead(statusCode, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(
+        JSON.stringify({
+          auth: authPayload,
+          session: sessionPayload,
+          confirmationRequired: Boolean(result.confirmationRequired),
+        })
+      );
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: err.message || '登録に失敗しました。' }));
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
+    try {
+      if (authState.tokens?.accessToken) {
+        await supabase
+          .signOut(authState.tokens.accessToken)
+          .catch((err) => console.error('Supabase sign-out failed:', err.message));
+      }
+      if (supabase.isConfigured() && authState.staff?.id) {
+        await supabase
+          .recordAuthEvent({ staffId: authState.staff.id, type: 'logout' })
+          .catch((err) => console.error('Supabase auth event error:', err.message));
+      }
+    } catch (err) {
+      console.error('Logout error:', err.message);
+    }
+
+    authState.user = null;
+    authState.staff = null;
+    authState.tokens = null;
+    await resetSessionAfterLogout();
+
+    const [authPayload, sessionPayload] = await Promise.all([
+      buildAuthPayload(),
+      buildSessionPayload(),
+    ]);
+
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(
+      JSON.stringify({
+        auth: authPayload,
+        session: sessionPayload,
+      })
+    );
+    return;
+  }
   if (req.method === 'GET' && url.pathname === '/api/state') {
     const body = {
       ready: knowledge.isReady,
@@ -71,6 +274,11 @@ async function handleApi(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/api/session') {
     const payload = await readJson(req);
     const previousStaff = sessionState.staffId;
+    if (supabase.isConfigured() && !authState.staff) {
+      res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: '先にログインしてください。' }));
+      return;
+    }
     updateSessionState(payload);
     if (supabase.isConfigured()) {
       try {
@@ -92,6 +300,11 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/threads') {
+    if (supabase.isConfigured() && !authState.staff) {
+      res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'スレッドを閲覧するにはログインが必要です。' }));
+      return;
+    }
     const threads = await supabase
       .listThreads({ officeId: sessionState.officeId })
       .catch((err) => {
@@ -108,6 +321,11 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/threads') {
+    if (supabase.isConfigured() && !authState.staff) {
+      res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'スレッドを作成するにはログインが必要です。' }));
+      return;
+    }
     const payload = await readJson(req);
     const current = updateSessionState(payload.session || {});
     if (!current.officeId || !current.staffId) {
@@ -167,6 +385,11 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     const payload = await readJson(req);
+    if (supabase.isConfigured() && !authState.staff) {
+      res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'チャットを利用するにはログインしてください。' }));
+      return;
+    }
     try {
       updateSessionState(payload.session || {});
       const activeSession = { ...sessionState };
@@ -233,6 +456,11 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/file-stores') {
+    if (supabase.isConfigured() && !authState.staff) {
+      res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'ファイルサーチを利用するにはログインしてください。' }));
+      return;
+    }
     try {
       let stores = await fileSearch.listStores();
       try {
@@ -256,6 +484,11 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/file-stores') {
+    if (supabase.isConfigured() && !authState.staff) {
+      res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'ストアを作成するにはログインしてください。' }));
+      return;
+    }
     const payload = await readJson(req);
     try {
       const store = await fileSearch.createStore(payload.displayName || payload.name || '');
@@ -285,6 +518,11 @@ async function handleApi(req, res, url) {
   const storeFilesMatch = url.pathname.match(/^\/api\/file-stores\/([^/]+)\/files$/);
   if (storeFilesMatch) {
     const storeName = decodeURIComponent(storeFilesMatch[1]);
+    if (supabase.isConfigured() && !authState.staff) {
+      res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'ファイルにアクセスするにはログインしてください。' }));
+      return;
+    }
     if (req.method === 'GET') {
       try {
         const files = await fileSearch.listFiles(storeName);
@@ -344,6 +582,9 @@ async function handleApi(req, res, url) {
 async function initializeSession() {
   try {
     const hierarchy = await supabase.getHierarchy();
+    if (supabase.isConfigured() && !authState.staff) {
+      return;
+    }
     const firstOrg = hierarchy[0];
     if (firstOrg && !sessionState.organizationId) {
       sessionState.organizationId = firstOrg.id;
@@ -363,6 +604,19 @@ async function initializeSession() {
 
 function updateSessionState(partial) {
   if (!partial || typeof partial !== 'object') {
+    return { ...sessionState };
+  }
+
+  if (supabase.isConfigured()) {
+    if (!authState.staff) {
+      return { ...sessionState };
+    }
+    sessionState.organizationId = authState.staff.organizationId || null;
+    sessionState.officeId = authState.staff.officeId || null;
+    sessionState.staffId = authState.staff.id || null;
+    if ('threadId' in partial) {
+      sessionState.threadId = partial.threadId || null;
+    }
     return { ...sessionState };
   }
 
@@ -408,46 +662,123 @@ async function buildSessionPayload() {
     console.error('Supabase hierarchy error:', err.message);
   }
 
-  if (!sessionState.organizationId && hierarchy[0]) {
-    sessionState.organizationId = hierarchy[0].id;
-  }
+  let filteredHierarchy = hierarchy;
 
-  if (!sessionState.officeId) {
-    const org = hierarchy.find((item) => item.id === sessionState.organizationId) || hierarchy[0];
-    if (org?.offices?.length) {
-      sessionState.officeId = org.offices[0].id;
+  if (supabase.isConfigured()) {
+    if (authState.staff) {
+      filteredHierarchy = hierarchy
+        .filter((org) => org.id === authState.staff.organizationId)
+        .map((org) => ({
+          ...org,
+          offices: (org.offices || []).filter((office) => office.id === authState.staff.officeId),
+        }));
+      sessionState.organizationId = authState.staff.organizationId || null;
+      sessionState.officeId = authState.staff.officeId || null;
+      sessionState.staffId = authState.staff.id || null;
+    } else {
+      filteredHierarchy = [];
+      sessionState.organizationId = null;
+      sessionState.officeId = null;
+      sessionState.staffId = null;
+      sessionState.threadId = null;
+    }
+  } else {
+    if (!sessionState.organizationId && filteredHierarchy[0]) {
+      sessionState.organizationId = filteredHierarchy[0].id;
+    }
+
+    if (!sessionState.officeId) {
+      const org = filteredHierarchy.find((item) => item.id === sessionState.organizationId) || filteredHierarchy[0];
+      if (org?.offices?.length) {
+        sessionState.officeId = org.offices[0].id;
+      }
+    }
+
+    if (!sessionState.staffId) {
+      const office = filteredHierarchy
+        .flatMap((org) => org.offices || [])
+        .find((item) => item.id === sessionState.officeId);
+      if (office?.staff?.length) {
+        sessionState.staffId = office.staff[0].id;
+      }
     }
   }
 
-  if (!sessionState.staffId) {
-    const office = hierarchy
-      .flatMap((org) => org.offices || [])
-      .find((item) => item.id === sessionState.officeId);
-    if (office?.staff?.length) {
-      sessionState.staffId = office.staff[0].id;
-    }
-  }
-
-  const currentOffice = hierarchy
+  const currentOffice = filteredHierarchy
     .flatMap((org) => org.offices || [])
     .find((item) => item.id === sessionState.officeId);
   if (currentOffice?.organizationId && sessionState.organizationId !== currentOffice.organizationId) {
     sessionState.organizationId = currentOffice.organizationId;
   }
 
-  const threads = await supabase
-    .listThreads({ officeId: sessionState.officeId })
-    .catch((err) => {
-      console.error('Supabase thread list error:', err.message);
-      return [];
-    });
+  let threads = [];
+  if (sessionState.officeId && (!supabase.isConfigured() || authState.staff)) {
+    threads = await supabase
+      .listThreads({ officeId: sessionState.officeId })
+      .catch((err) => {
+        console.error('Supabase thread list error:', err.message);
+        return [];
+      });
+  }
 
   return {
     supabaseConfigured: supabase.isConfigured(),
-    hierarchy,
+    hierarchy: filteredHierarchy,
     session: { ...sessionState },
     threads,
   };
+}
+
+async function buildAuthPayload() {
+  const googleUrl = supabase.buildGoogleOAuthUrl({ redirectTo: process.env.SUPABASE_GOOGLE_REDIRECT_URL });
+  return {
+    authenticated: Boolean(authState.user && authState.staff),
+    user: authState.user
+      ? {
+          id: authState.user.id,
+          email: authState.user.email,
+          displayName: authState.user.displayName,
+        }
+      : null,
+    staff: authState.staff
+      ? {
+          id: authState.staff.id,
+          email: authState.staff.email,
+          displayName: authState.staff.displayName,
+          officeId: authState.staff.officeId,
+          officeName: authState.staff.officeName,
+          organizationId: authState.staff.organizationId,
+          organizationName: authState.staff.organizationName,
+          role: authState.staff.role,
+        }
+      : null,
+    supabaseConfigured: supabase.isConfigured(),
+    authConfigured: supabase.isAuthConfigured(),
+    providers: {
+      google: {
+        enabled: Boolean(googleUrl),
+        url: googleUrl,
+      },
+    },
+  };
+}
+
+function syncSessionWithAuth() {
+  if (authState.staff) {
+    sessionState.organizationId = authState.staff.organizationId || null;
+    sessionState.officeId = authState.staff.officeId || null;
+    sessionState.staffId = authState.staff.id || null;
+  }
+}
+
+async function resetSessionAfterLogout() {
+  sessionState.organizationId = null;
+  sessionState.officeId = null;
+  sessionState.staffId = null;
+  sessionState.threadId = null;
+  if (!supabase.isConfigured()) {
+    await initializeSession();
+  }
 }
 
 function generateThreadTitle(text) {

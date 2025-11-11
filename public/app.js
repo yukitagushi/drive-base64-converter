@@ -40,6 +40,31 @@ const documentError = document.getElementById('document-error');
 const docTitle = document.getElementById('doc-title');
 const docContent = document.getElementById('doc-content');
 
+const authTrigger = document.getElementById('auth-trigger');
+const authUserContainer = document.getElementById('auth-user');
+const authUserButton = document.getElementById('auth-user-button');
+const authUserInitial = document.getElementById('auth-user-initial');
+const authUserLabel = document.getElementById('auth-user-label');
+const authMenu = document.getElementById('auth-menu');
+const authMenuName = document.getElementById('auth-menu-name');
+const authMenuEmail = document.getElementById('auth-menu-email');
+const authMenuLogout = document.getElementById('auth-menu-logout');
+const authDialog = document.getElementById('auth-dialog');
+const authTabs = Array.from(document.querySelectorAll('[data-auth-tab]'));
+const authPanels = Array.from(document.querySelectorAll('[data-auth-panel]'));
+const loginForm = document.getElementById('login-form');
+const loginEmailInput = document.getElementById('login-email');
+const loginPasswordInput = document.getElementById('login-password');
+const registerForm = document.getElementById('register-form');
+const registerNameInput = document.getElementById('register-name');
+const registerEmailInput = document.getElementById('register-email');
+const registerPasswordInput = document.getElementById('register-password');
+const registerOrganizationInput = document.getElementById('register-organization');
+const registerOfficeInput = document.getElementById('register-office');
+const authFeedback = document.getElementById('auth-feedback');
+const googleLoginBtn = document.getElementById('google-login');
+const googleHint = document.getElementById('google-hint');
+
 let conversationHistory = [];
 let isSending = false;
 let storeCache = [];
@@ -53,8 +78,19 @@ const sessionState = {
   supabaseConfigured: false,
 };
 
+const authState = {
+  authenticated: false,
+  user: null,
+  staff: null,
+  providers: { google: { enabled: false, url: null } },
+  supabaseConfigured: false,
+  authConfigured: false,
+};
+
 let organizationHierarchy = [];
 let threadCache = [];
+
+let authMenuOpen = false;
 
 const SAMPLE_NOTES = [
   {
@@ -72,6 +108,7 @@ const SAMPLE_NOTES = [
 init();
 
 async function init() {
+  await loadAuth();
   await loadSession();
   fetchState();
   loadStores();
@@ -112,19 +149,335 @@ async function init() {
   uploadStoreSelect.addEventListener('change', updateUploadButtonState);
 
   document.addEventListener('click', (event) => {
-    const target = event.target.closest('[data-close-dialog]');
-    if (!target) return;
-    const dialogId = target.getAttribute('data-close-dialog');
-    const dialog = document.getElementById(dialogId);
-    if (dialog && typeof dialog.close === 'function') {
-      dialog.close();
+    const closeTarget = event.target.closest('[data-close-dialog]');
+    if (closeTarget) {
+      const dialogId = closeTarget.getAttribute('data-close-dialog');
+      const dialog = document.getElementById(dialogId);
+      if (dialog && typeof dialog.close === 'function') {
+        dialog.close();
+      }
+    }
+    if (authMenuOpen && !event.target.closest('.auth-user')) {
+      closeAuthMenu();
     }
   });
 
+  authTrigger?.addEventListener('click', () => {
+    closeAuthMenu();
+    openAuthDialog('login');
+  });
+  authUserButton?.addEventListener('click', onAuthUserButtonClick);
+  authMenuLogout?.addEventListener('click', onLogout);
+  authTabs.forEach((tab) => {
+    tab.addEventListener('click', () => switchAuthTab(tab.dataset.authTab));
+  });
+  loginForm?.addEventListener('submit', onLoginSubmit);
+  registerForm?.addEventListener('submit', onRegisterSubmit);
+  googleLoginBtn?.addEventListener('click', onGoogleLogin);
+  authDialog?.addEventListener('close', onAuthDialogClose);
+
   setupDialogDismissal(storeDialog);
   setupDialogDismissal(uploadDialog);
+  setupDialogDismissal(authDialog);
 
   storeList.addEventListener('click', onStoreListClick);
+}
+
+async function loadAuth() {
+  try {
+    const res = await fetch('/api/auth/state');
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || '認証状態の取得に失敗しました');
+    }
+    applyAuthState(data);
+  } catch (error) {
+    console.error(error);
+    applyAuthState({
+      authenticated: false,
+      user: null,
+      staff: null,
+      providers: { google: { enabled: false, url: null } },
+      supabaseConfigured: false,
+      authConfigured: false,
+    });
+  }
+}
+
+function applyAuthState(next) {
+  if (!next || typeof next !== 'object') return;
+  authState.authenticated = Boolean(next.authenticated);
+  authState.user = next.user || null;
+  authState.staff = next.staff || null;
+  authState.providers = next.providers || { google: { enabled: false, url: null } };
+  authState.supabaseConfigured = Boolean(next.supabaseConfigured);
+  authState.authConfigured = Boolean(next.authConfigured);
+  updateAuthUi();
+}
+
+function updateAuthUi() {
+  if (authTrigger) {
+    authTrigger.classList.toggle('is-hidden', authState.authenticated);
+  }
+  if (authUserContainer) {
+    authUserContainer.hidden = !authState.authenticated;
+  }
+  if (authState.authenticated && authState.user) {
+    const name = authState.user.displayName || authState.user.email || 'ユーザー';
+    if (authUserLabel) authUserLabel.textContent = name;
+    if (authUserInitial) authUserInitial.textContent = getInitials(name);
+    if (authMenuName) authMenuName.textContent = name;
+    if (authMenuEmail) authMenuEmail.textContent = authState.user.email || '';
+  } else {
+    closeAuthMenu();
+    if (authUserLabel) authUserLabel.textContent = 'ゲスト';
+    if (authUserInitial) authUserInitial.textContent = 'G';
+    if (authMenuName) authMenuName.textContent = '';
+    if (authMenuEmail) authMenuEmail.textContent = '';
+  }
+
+  if (googleLoginBtn) {
+    const provider = authState.providers?.google || { enabled: false, url: null };
+    googleLoginBtn.disabled = !provider.enabled;
+    if (provider.url) {
+      googleLoginBtn.dataset.url = provider.url;
+    } else {
+      delete googleLoginBtn.dataset.url;
+    }
+  }
+
+  if (googleHint) {
+    if (authState.providers?.google?.enabled) {
+      googleHint.textContent = 'Google アカウントで 1 クリックログインできます。';
+    } else if (authState.authConfigured) {
+      googleHint.textContent = 'Google ログインは現在利用できません。管理者にお問い合わせください。';
+    } else {
+      googleHint.textContent = 'Google OAuth を設定するとここからログインできます。';
+    }
+  }
+}
+
+function openAuthDialog(mode = 'login') {
+  if (!authDialog || typeof authDialog.showModal !== 'function') return;
+  switchAuthTab(mode);
+  setAuthFeedback('');
+  loginForm?.reset();
+  registerForm?.reset();
+  if (!authDialog.open) {
+    authDialog.showModal();
+  }
+}
+
+function switchAuthTab(target) {
+  const normalized = target === 'register' ? 'register' : 'login';
+  authTabs.forEach((tab) => {
+    const active = tab.dataset.authTab === normalized;
+    tab.classList.toggle('is-active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  authPanels.forEach((panel) => {
+    const active = panel.dataset.authPanel === normalized;
+    panel.classList.toggle('is-active', active);
+    panel.hidden = !active;
+  });
+}
+
+function onAuthUserButtonClick(event) {
+  event.preventDefault();
+  if (!authState.authenticated) {
+    openAuthDialog('login');
+    return;
+  }
+  if (authMenuOpen) {
+    closeAuthMenu();
+  } else {
+    openAuthMenu();
+  }
+}
+
+function openAuthMenu() {
+  if (!authMenu || !authUserButton) return;
+  authMenu.classList.add('is-open');
+  authUserButton.setAttribute('aria-expanded', 'true');
+  authMenuOpen = true;
+}
+
+function closeAuthMenu() {
+  if (!authMenu || !authUserButton) return;
+  authMenu.classList.remove('is-open');
+  authUserButton.setAttribute('aria-expanded', 'false');
+  authMenuOpen = false;
+}
+
+function setAuthFeedback(message, options = {}) {
+  if (!authFeedback) return;
+  authFeedback.textContent = message || '';
+  authFeedback.classList.toggle('is-visible', Boolean(message));
+  authFeedback.classList.toggle('is-success', Boolean(message) && options.type === 'success');
+}
+
+function onAuthDialogClose() {
+  setAuthFeedback('');
+  loginForm?.reset();
+  registerForm?.reset();
+}
+
+async function onLoginSubmit(event) {
+  event.preventDefault();
+  if (!loginEmailInput || !loginPasswordInput) return;
+  const email = loginEmailInput.value.trim();
+  const password = loginPasswordInput.value.trim();
+  if (!email || !password) {
+    setAuthFeedback('メールアドレスとパスワードを入力してください。');
+    return;
+  }
+
+  setAuthFeedback('');
+  const submitButton = loginForm.querySelector('button[type="submit"]');
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.textContent = 'ログイン中...';
+  }
+
+  try {
+    const res = await fetch('/api/auth/login-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'ログインに失敗しました');
+    }
+    applyAuthState(data.auth);
+    if (data.session) {
+      applySessionPayload(data.session);
+      loadStores({ force: true });
+    }
+    authDialog?.close();
+  } catch (error) {
+    console.error(error);
+    setAuthFeedback(error.message || 'ログインに失敗しました。');
+  } finally {
+    if (submitButton) {
+      submitButton.disabled = false;
+      submitButton.textContent = 'メールアドレスでログイン';
+    }
+  }
+}
+
+async function onRegisterSubmit(event) {
+  event.preventDefault();
+  if (!registerEmailInput || !registerPasswordInput || !registerNameInput) return;
+  const payload = {
+    email: registerEmailInput.value.trim(),
+    password: registerPasswordInput.value,
+    displayName: registerNameInput.value.trim(),
+    organizationName: registerOrganizationInput?.value.trim() || '',
+    officeName: registerOfficeInput?.value.trim() || '',
+  };
+
+  if (!payload.email || !payload.password || !payload.displayName) {
+    setAuthFeedback('氏名・メールアドレス・パスワードは必須です。');
+    return;
+  }
+
+  setAuthFeedback('');
+  const submitButton = registerForm.querySelector('button[type="submit"]');
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.textContent = '登録中...';
+  }
+
+  try {
+    const res = await fetch('/api/auth/register-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      throw new Error(data.error || '登録に失敗しました');
+    }
+    applyAuthState(data.auth);
+    if (data.session) {
+      applySessionPayload(data.session);
+      loadStores({ force: true });
+    }
+    if (data.confirmationRequired) {
+      setAuthFeedback('確認メールを送信しました。メールを確認してから再度ログインしてください。', {
+        type: 'success',
+      });
+    } else {
+      authDialog?.close();
+    }
+  } catch (error) {
+    console.error(error);
+    setAuthFeedback(error.message || '登録に失敗しました。');
+  } finally {
+    if (submitButton) {
+      submitButton.disabled = false;
+      submitButton.textContent = 'アカウントを作成';
+    }
+  }
+}
+
+async function onLogout(event) {
+  event?.preventDefault();
+  if (!authState.authenticated) {
+    openAuthDialog('login');
+    return;
+  }
+
+  const button = authMenuLogout;
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'ログアウト中...';
+  }
+
+  try {
+    const res = await fetch('/api/auth/logout', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'ログアウトに失敗しました');
+    }
+    applyAuthState(data.auth);
+    if (data.session) {
+      applySessionPayload(data.session);
+      loadStores({ force: true });
+      resetConversation();
+    }
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'ログアウトに失敗しました');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'ログアウト';
+    }
+    closeAuthMenu();
+  }
+}
+
+function onGoogleLogin(event) {
+  event.preventDefault();
+  const provider = authState.providers?.google;
+  if (!provider?.enabled || !provider.url) {
+    setAuthFeedback('Google ログインは現在利用できません。');
+    return;
+  }
+  window.location.href = provider.url;
+}
+
+function applySessionPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return;
+  }
+  organizationHierarchy = Array.isArray(payload.hierarchy) ? payload.hierarchy : [];
+  sessionState.supabaseConfigured = Boolean(payload.supabaseConfigured);
+  applySessionUpdate(payload.session, payload.threads);
+  renderSessionSelectors();
+  renderThreads();
 }
 
 async function loadSession() {
@@ -134,11 +487,7 @@ async function loadSession() {
     if (!res.ok || data.error) {
       throw new Error(data.error || 'セッション情報の取得に失敗しました');
     }
-    organizationHierarchy = data.hierarchy || [];
-    sessionState.supabaseConfigured = Boolean(data.supabaseConfigured);
-    applySessionUpdate(data.session, data.threads);
-    renderSessionSelectors();
-    renderThreads();
+    applySessionPayload(data);
   } catch (error) {
     console.error(error);
     threadList.innerHTML = '<p class="empty-hint">セッション情報を読み込めませんでした。</p>';
@@ -179,8 +528,16 @@ function renderSessionSelectors() {
   if (!organizationHierarchy.length) {
     sessionOfficeSelect.disabled = true;
     sessionStaffSelect.disabled = true;
-    sessionOfficeSelect.innerHTML = '<option value="">事業所が未登録です</option>';
-    sessionStaffSelect.innerHTML = '<option value="">スタッフが未登録です</option>';
+    const officeMessage =
+      sessionState.supabaseConfigured && !authState.authenticated
+        ? 'ログインすると利用できます'
+        : '事業所が未登録です';
+    const staffMessage =
+      sessionState.supabaseConfigured && !authState.authenticated
+        ? 'ログインすると利用できます'
+        : 'スタッフが未登録です';
+    sessionOfficeSelect.innerHTML = `<option value="">${officeMessage}</option>`;
+    sessionStaffSelect.innerHTML = `<option value="">${staffMessage}</option>`;
     return;
   }
 
@@ -278,9 +635,13 @@ function renderThreads() {
 
 function updateSessionHint() {
   if (!sessionHint) return;
-  sessionHint.textContent = sessionState.supabaseConfigured
-    ? 'スレッドを切り替えると会話履歴が Supabase に保存されます。'
-    : 'スレッド切り替えはローカルセッション内でのみ保持されます。';
+  if (sessionState.supabaseConfigured && !authState.authenticated) {
+    sessionHint.textContent = 'ログインすると事業所ごとのスレッドが表示されます。';
+  } else if (sessionState.supabaseConfigured) {
+    sessionHint.textContent = 'スレッドを切り替えると会話履歴が Supabase に保存されます。';
+  } else {
+    sessionHint.textContent = 'スレッド切り替えはローカルセッション内でのみ保持されます。';
+  }
 }
 
 function resetConversation() {
@@ -431,9 +792,7 @@ async function setSession(partial) {
     if (!res.ok || data.error) {
       throw new Error(data.error || 'セッションの更新に失敗しました');
     }
-    organizationHierarchy = data.hierarchy || organizationHierarchy;
-    applySessionUpdate(data.session, data.threads);
-    renderSessionSelectors();
+    applySessionPayload(data);
     if (Object.prototype.hasOwnProperty.call(partial, 'officeId')) {
       loadStores({ force: true });
     }
@@ -653,6 +1012,10 @@ function renderStores() {
 
   if (!storeCache.length) {
     storeEmpty.style.display = 'block';
+    storeEmpty.textContent =
+      authState.authenticated || !sessionState.supabaseConfigured
+        ? 'まだストアがありません。まずはストアを作成してください。'
+        : 'ログインすると事業所のストアが表示されます。';
     return;
   }
 
@@ -1003,6 +1366,19 @@ function setupDialogDismissal(dialog) {
       dialog.close();
     }
   });
+}
+
+function getInitials(value) {
+  if (!value) return 'U';
+  const text = String(value).trim();
+  if (!text) return 'U';
+  const parts = text.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) {
+    return parts[0].charAt(0).toUpperCase();
+  }
+  const first = parts[0].charAt(0);
+  const last = parts[parts.length - 1].charAt(0);
+  return `${first}${last}`.toUpperCase();
 }
 
 function formatBytes(bytes) {
