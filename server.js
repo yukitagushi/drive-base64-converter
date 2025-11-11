@@ -730,7 +730,9 @@ async function buildSessionPayload() {
 }
 
 async function buildAuthPayload() {
+  const supabaseConfig = supabase.getBrowserConfig();
   const googleUrl = supabase.buildGoogleOAuthUrl({ redirectTo: process.env.SUPABASE_GOOGLE_REDIRECT_URL });
+  const googleEnabled = Boolean(googleUrl && supabaseConfig);
   return {
     authenticated: Boolean(authState.user && authState.staff),
     user: authState.user
@@ -754,10 +756,11 @@ async function buildAuthPayload() {
       : null,
     supabaseConfigured: supabase.isConfigured(),
     authConfigured: supabase.isAuthConfigured(),
+    supabase: supabaseConfig,
     providers: {
       google: {
-        enabled: Boolean(googleUrl),
-        url: googleUrl,
+        enabled: googleEnabled,
+        url: googleEnabled ? googleUrl : null,
       },
     },
   };

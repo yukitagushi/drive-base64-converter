@@ -1,3 +1,5 @@
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2?bundle';
+
 const appShell = document.querySelector('.app-shell');
 const landingScreen = document.getElementById('landing-screen');
 const loginScreen = document.getElementById('login-screen');
@@ -76,10 +78,15 @@ const authFeedback = document.getElementById('auth-feedback');
 const googleLoginBtn = document.getElementById('google-login');
 const googleHint = document.getElementById('google-hint');
 
+const toastContainer = createToastContainer();
+
 let conversationHistory = [];
 let isSending = false;
 let storeCache = [];
 const storeFilesCache = new Map();
+
+let supabaseBrowserClient = null;
+let supabaseClientSignature = null;
 
 const sessionState = {
   organizationId: null,
@@ -96,6 +103,7 @@ const authState = {
   providers: { google: { enabled: false, url: null } },
   supabaseConfigured: false,
   authConfigured: false,
+  supabase: null,
 };
 
 let organizationHierarchy = [];
@@ -137,6 +145,48 @@ async function safeFetch(url, options = {}) {
   }
 
   return body;
+}
+
+function updateSupabaseClientFromState() {
+  const config = authState.supabase;
+  const signature = config?.url && config?.anonKey ? `${config.url}::${config.anonKey}` : null;
+
+  if (!signature) {
+    supabaseBrowserClient = null;
+    supabaseClientSignature = null;
+    return false;
+  }
+
+  if (signature === supabaseClientSignature && supabaseBrowserClient) {
+    return true;
+  }
+
+  try {
+    supabaseBrowserClient = createClient(config.url, config.anonKey, {
+      auth: {
+        persistSession: false,
+      },
+    });
+    supabaseClientSignature = signature;
+    return true;
+  } catch (error) {
+    console.error('Failed to initialize Supabase client:', error);
+    supabaseBrowserClient = null;
+    supabaseClientSignature = null;
+    return false;
+  }
+}
+
+function getSupabaseClient(options = {}) {
+  const { create = true } = options || {};
+  if (!supabaseBrowserClient && create) {
+    updateSupabaseClientFromState();
+  }
+  return supabaseBrowserClient;
+}
+
+function hasSupabaseClient() {
+  return Boolean(getSupabaseClient({ create: false }));
 }
 
 init();
@@ -244,6 +294,7 @@ async function loadAuth() {
       providers: { google: { enabled: false, url: null } },
       supabaseConfigured: false,
       authConfigured: false,
+      supabase: null,
     });
   }
 }
@@ -257,6 +308,8 @@ function applyAuthState(next) {
   authState.providers = next.providers || { google: { enabled: false, url: null } };
   authState.supabaseConfigured = Boolean(next.supabaseConfigured);
   authState.authConfigured = Boolean(next.authConfigured);
+  authState.supabase = next.supabase || null;
+  updateSupabaseClientFromState();
   updateAuthUi();
   if (wasAuthenticated && !authState.authenticated) {
     handleLoggedOut();
@@ -319,19 +372,24 @@ function updateAuthUi() {
     if (authMenuEmail) authMenuEmail.textContent = '';
   }
 
+  const googleProvider = authState.providers?.google || { enabled: false, url: null };
+  const googleReady = googleProvider.enabled && hasSupabaseClient();
+
   if (googleLoginBtn) {
-    const provider = authState.providers?.google || { enabled: false, url: null };
-    googleLoginBtn.disabled = !provider.enabled;
-    if (provider.url) {
-      googleLoginBtn.dataset.url = provider.url;
+    googleLoginBtn.disabled = !googleReady;
+    googleLoginBtn.classList.toggle('is-disabled', !googleReady);
+    if (googleProvider.url) {
+      googleLoginBtn.dataset.url = googleProvider.url;
     } else {
       delete googleLoginBtn.dataset.url;
     }
   }
 
   if (googleHint) {
-    if (authState.providers?.google?.enabled) {
+    if (googleReady) {
       googleHint.textContent = 'Google アカウントで 1 クリックログインできます。';
+    } else if (googleProvider.enabled && !hasSupabaseClient()) {
+      googleHint.textContent = 'Supabase の公開キーを確認してください。';
     } else if (authState.authConfigured) {
       googleHint.textContent = 'Google ログインは現在利用できません。管理者にお問い合わせください。';
     } else {
@@ -635,14 +693,60 @@ async function onLogout(event) {
   }
 }
 
-function onGoogleLogin(event) {
+async function onGoogleLogin(event) {
   event.preventDefault();
+  const button = event?.currentTarget instanceof HTMLButtonElement ? event.currentTarget : googleLoginBtn;
   const provider = authState.providers?.google;
-  if (!provider?.enabled || !provider.url) {
-    setAuthFeedback('Google ログインは現在利用できません。');
+  const supabase = getSupabaseClient();
+
+  if (!provider?.enabled) {
+    showToast('Google ログインは現在利用できません。', { type: 'error' });
     return;
   }
-  window.location.href = provider.url;
+
+  if (!supabase) {
+    if (provider?.url) {
+      window.location.href = provider.url;
+      return;
+    }
+    showToast('Supabase OAuth の設定が見つかりません。', { type: 'error' });
+    return;
+  }
+
+  let redirectUrl = provider?.url || null;
+
+  try {
+    if (button) {
+      button.disabled = true;
+    }
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: `${window.location.origin}/`,
+        skipBrowserRedirect: true,
+      },
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    if (data?.url) {
+      redirectUrl = data.url;
+    }
+  } catch (error) {
+    console.error(error);
+    showToast(error?.message || 'Google ログインに失敗しました。', { type: 'error' });
+    redirectUrl = null;
+  } finally {
+    if (!redirectUrl && button) {
+      button.disabled = false;
+    }
+  }
+
+  if (redirectUrl) {
+    window.location.assign(redirectUrl);
+  }
 }
 
 function onAccountRequestConfirm(event) {
@@ -1598,6 +1702,56 @@ function setupDialogDismissal(dialog) {
     if (event.target === dialog) {
       dialog.close();
     }
+  });
+}
+
+function createToastContainer() {
+  const existing = document.querySelector('.toast-container');
+  if (existing) {
+    return existing;
+  }
+  const element = document.createElement('div');
+  element.className = 'toast-container';
+  const attach = () => {
+    if (!element.isConnected && document.body) {
+      document.body.appendChild(element);
+    }
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', attach, { once: true });
+  } else {
+    attach();
+  }
+  return element;
+}
+
+function showToast(message, options = {}) {
+  if (!toastContainer) {
+    console.warn('Toast container is not available.');
+    return;
+  }
+  const { type = 'info', duration = 4500 } = options;
+  const toast = document.createElement('div');
+  toast.className = `toast toast--${type}`;
+  toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  toast.textContent = message;
+  toastContainer.appendChild(toast);
+
+  requestAnimationFrame(() => {
+    toast.classList.add('is-visible');
+  });
+
+  const removeToast = () => {
+    toast.classList.remove('is-visible');
+    setTimeout(() => {
+      toast.remove();
+    }, 180);
+  };
+
+  const timer = setTimeout(removeToast, duration);
+  toast.addEventListener('click', () => {
+    clearTimeout(timer);
+    removeToast();
   });
 }
 
