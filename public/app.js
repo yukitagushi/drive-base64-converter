@@ -105,6 +105,27 @@ const SAMPLE_NOTES = [
   },
 ];
 
+async function safeFetch(url, options = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options?.headers || {}),
+  };
+  const response = await fetch(url, { ...options, headers });
+  const contentType = response.headers.get('content-type') || '';
+  const isJson = contentType.includes('application/json');
+  const body = isJson ? await response.json() : await response.text();
+
+  if (!response.ok) {
+    const message =
+      typeof body === 'string'
+        ? body
+        : body?.error || (body ? JSON.stringify(body) : 'リクエストに失敗しました');
+    throw new Error(message);
+  }
+
+  return body;
+}
+
 init();
 
 async function init() {
@@ -185,9 +206,8 @@ async function init() {
 
 async function loadAuth() {
   try {
-    const res = await fetch('/api/auth/state');
-    const data = await res.json();
-    if (!res.ok) {
+    const data = await safeFetch('/api/auth/state');
+    if (data?.error) {
       throw new Error(data.error || '認証状態の取得に失敗しました');
     }
     applyAuthState(data);
@@ -340,13 +360,11 @@ async function onLoginSubmit(event) {
   }
 
   try {
-    const res = await fetch('/api/auth/login-email', {
+    const data = await safeFetch('/api/auth/login-email', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
     });
-    const data = await res.json();
-    if (!res.ok || data.error) {
+    if (data?.error) {
       throw new Error(data.error || 'ログインに失敗しました');
     }
     applyAuthState(data.auth);
@@ -372,12 +390,14 @@ async function onRegisterSubmit(event) {
   const payload = {
     email: registerEmailInput.value.trim(),
     password: registerPasswordInput.value,
+    name: registerNameInput.value.trim(),
     displayName: registerNameInput.value.trim(),
+    orgName: registerOrganizationInput?.value.trim() || '',
     organizationName: registerOrganizationInput?.value.trim() || '',
     officeName: registerOfficeInput?.value.trim() || '',
   };
 
-  if (!payload.email || !payload.password || !payload.displayName) {
+  if (!payload.email || !payload.password || !payload.name) {
     setAuthFeedback('氏名・メールアドレス・パスワードは必須です。');
     return;
   }
@@ -390,27 +410,40 @@ async function onRegisterSubmit(event) {
   }
 
   try {
-    const res = await fetch('/api/auth/register-email', {
+    const data = await safeFetch('/api/auth/signup', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const data = await res.json();
-    if (!res.ok || data.error) {
+    if (data?.error) {
       throw new Error(data.error || '登録に失敗しました');
     }
-    applyAuthState(data.auth);
-    if (data.session) {
-      applySessionPayload(data.session);
-      loadStores({ force: true });
+
+    if (data?.auth || data?.session || data?.confirmationRequired !== undefined) {
+      applyAuthState(data.auth);
+      if (data.session) {
+        applySessionPayload(data.session);
+        loadStores({ force: true });
+      }
+      if (data.confirmationRequired) {
+        setAuthFeedback('確認メールを送信しました。メールを確認してから再度ログインしてください。', {
+          type: 'success',
+        });
+      } else {
+        authDialog?.close();
+      }
+      return;
     }
-    if (data.confirmationRequired) {
-      setAuthFeedback('確認メールを送信しました。メールを確認してから再度ログインしてください。', {
+
+    if (data?.ok) {
+      setAuthFeedback('登録が完了しました。登録したメールアドレスでログインしてください。', {
         type: 'success',
       });
-    } else {
-      authDialog?.close();
+      switchAuthTab('login');
+      return;
     }
+
+    setAuthFeedback('登録が完了しました。ログイン画面に移動してください。', { type: 'success' });
+    switchAuthTab('login');
   } catch (error) {
     console.error(error);
     setAuthFeedback(error.message || '登録に失敗しました。');
@@ -436,9 +469,8 @@ async function onLogout(event) {
   }
 
   try {
-    const res = await fetch('/api/auth/logout', { method: 'POST' });
-    const data = await res.json();
-    if (!res.ok || data.error) {
+    const data = await safeFetch('/api/auth/logout', { method: 'POST' });
+    if (data?.error) {
       throw new Error(data.error || 'ログアウトに失敗しました');
     }
     applyAuthState(data.auth);
@@ -482,9 +514,8 @@ function applySessionPayload(payload) {
 
 async function loadSession() {
   try {
-    const res = await fetch('/api/session');
-    const data = await res.json();
-    if (!res.ok || data.error) {
+    const data = await safeFetch('/api/session');
+    if (data?.error) {
       throw new Error(data.error || 'セッション情報の取得に失敗しました');
     }
     applySessionPayload(data);
@@ -746,9 +777,8 @@ async function onStartThread() {
   startThreadBtn.textContent = '作成中...';
 
   try {
-    const res = await fetch('/api/threads', {
+    const data = await safeFetch('/api/threads', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         session: {
           officeId: sessionState.officeId,
@@ -757,8 +787,7 @@ async function onStartThread() {
         query: chatInput.value.trim(),
       }),
     });
-    const data = await res.json();
-    if (!res.ok || data.error) {
+    if (data?.error) {
       throw new Error(data.error || 'スレッドの作成に失敗しました');
     }
     organizationHierarchy = data.hierarchy || organizationHierarchy;
@@ -783,13 +812,11 @@ async function onThreadListClick(event) {
 
 async function setSession(partial) {
   try {
-    const res = await fetch('/api/session', {
+    const data = await safeFetch('/api/session', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(partial),
     });
-    const data = await res.json();
-    if (!res.ok || data.error) {
+    if (data?.error) {
       throw new Error(data.error || 'セッションの更新に失敗しました');
     }
     applySessionPayload(data);
@@ -803,9 +830,8 @@ async function setSession(partial) {
 
 async function fetchState() {
   try {
-    const res = await fetch('/api/state');
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || '状態の取得に失敗しました');
+    const data = await safeFetch('/api/state');
+    if (data?.error) throw new Error(data.error || '状態の取得に失敗しました');
 
     if (!data.hasApiKey) {
       apiStatusPill.classList.remove('ready');
@@ -853,9 +879,8 @@ async function onChatSubmit(event) {
   setStatus('Gemini が応答を生成中...');
 
   try {
-    const res = await fetch('/api/chat', {
+    const data = await safeFetch('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         query: text,
         history: conversationHistory.slice(0, -1),
@@ -867,9 +892,8 @@ async function onChatSubmit(event) {
         },
       }),
     });
-    const data = await res.json();
 
-    if (!res.ok || data.error) {
+    if (data?.error) {
       throw new Error(data.error || '応答の取得に失敗しました');
     }
 
@@ -908,14 +932,12 @@ async function onDocumentSubmit(event) {
   }
 
   try {
-    const res = await fetch('/api/documents', {
+    const data = await safeFetch('/api/documents', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, content }),
     });
-    const data = await res.json();
 
-    if (!res.ok || data.error) {
+    if (data?.error) {
       throw new Error(data.error || '追加に失敗しました');
     }
 
@@ -933,10 +955,10 @@ async function onDocumentSubmit(event) {
 
 async function loadDocuments() {
   try {
-    const res = await fetch('/api/documents');
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'ドキュメントの取得に失敗しました');
-    renderDocuments(data.documents);
+    const data = await safeFetch('/api/documents');
+    if (data?.error) throw new Error(data.error || 'ドキュメントの取得に失敗しました');
+    const list = Array.isArray(data.documents) ? data.documents : Array.isArray(data.items) ? data.items : null;
+    renderDocuments(list);
   } catch (error) {
     console.error(error);
     documentList.innerHTML = '<p class="form-error">ドキュメントを読み込めませんでした。</p>';
@@ -949,12 +971,15 @@ async function loadStores(options = {}) {
     storeList.dataset.loading = 'true';
   }
   try {
-    const res = await fetch('/api/file-stores');
-    const data = await res.json();
-    if (!res.ok) {
+    const data = await safeFetch('/api/file-stores');
+    if (data?.error) {
       throw new Error(data.error || 'ファイルストアの取得に失敗しました');
     }
-    storeCache = Array.isArray(data.stores) ? data.stores : [];
+    storeCache = Array.isArray(data.stores)
+      ? data.stores
+      : Array.isArray(data.items)
+      ? data.items
+      : [];
     if (data.session) {
       applySessionUpdate(data.session, data.threads);
       renderSessionSelectors();
@@ -1072,13 +1097,11 @@ async function onCreateStore(event) {
   submitStoreBtn.textContent = '作成中...';
 
   try {
-    const res = await fetch('/api/file-stores', {
+    const data = await safeFetch('/api/file-stores', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ displayName: name }),
     });
-    const data = await res.json();
-    if (!res.ok || data.error) {
+    if (data?.error) {
       throw new Error(data.error || 'ストアの作成に失敗しました');
     }
     storeDialog.close();
@@ -1113,9 +1136,8 @@ async function onUploadFile(event) {
     submitUploadBtn.textContent = 'アップロード中...';
 
     const base64 = await readFileAsBase64(file);
-    const res = await fetch(`/api/file-stores/${encodeURIComponent(storeName)}/files`, {
+    const data = await safeFetch(`/api/file-stores/${encodeURIComponent(storeName)}/files`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         fileName: file.name,
         mimeType: file.type,
@@ -1124,8 +1146,7 @@ async function onUploadFile(event) {
         data: base64,
       }),
     });
-    const data = await res.json();
-    if (!res.ok || data.error) {
+    if (data?.error) {
       throw new Error(data.error || 'アップロードに失敗しました');
     }
 
@@ -1206,9 +1227,8 @@ async function toggleStoreFiles(card, button, storeName) {
   try {
     let files = storeFilesCache.get(storeName);
     if (!files) {
-      const res = await fetch(`/api/file-stores/${encodeURIComponent(storeName)}/files`);
-      const data = await res.json();
-      if (!res.ok || data.error) {
+      const data = await safeFetch(`/api/file-stores/${encodeURIComponent(storeName)}/files`);
+      if (data?.error) {
         throw new Error(data.error || 'ファイル一覧の取得に失敗しました');
       }
       files = Array.isArray(data.files) ? data.files : [];

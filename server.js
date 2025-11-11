@@ -140,7 +140,7 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/auth/register-email') {
+  if (req.method === 'POST' && (url.pathname === '/api/auth/register-email' || url.pathname === '/api/auth/signup')) {
     try {
       const payload = await readJson(req);
       const result = await supabase.signUpWithPassword({
