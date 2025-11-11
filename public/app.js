@@ -1,3 +1,11 @@
+const appShell = document.querySelector('.app-shell');
+const loginScreen = document.getElementById('login-screen');
+const accountRequestTrigger = document.getElementById('account-request-trigger');
+const accountRequestDialog = document.getElementById('account-request-dialog');
+const accountRequestNotice = document.getElementById('account-request-notice');
+const accountRequestConfirm = document.getElementById('account-request-confirm');
+const accountRequestCancel = document.getElementById('account-request-cancel');
+
 const messageList = document.getElementById('message-list');
 const chatForm = document.getElementById('chat-form');
 const chatInput = document.getElementById('chat-input');
@@ -89,6 +97,7 @@ const authState = {
 
 let organizationHierarchy = [];
 let threadCache = [];
+let hasBootstrapped = false;
 
 let authMenuOpen = false;
 
@@ -130,10 +139,17 @@ init();
 
 async function init() {
   await loadAuth();
-  await loadSession();
+  if (authState.authenticated) {
+    try {
+      await bootstrapAfterAuth();
+    } catch (error) {
+      console.error(error);
+    }
+  } else {
+    clearSessionData();
+  }
+
   fetchState();
-  loadStores();
-  loadDocuments();
   autoResize(chatInput);
   autoResize(docContent);
   autoResize(uploadNotesInput);
@@ -196,10 +212,15 @@ async function init() {
   registerForm?.addEventListener('submit', onRegisterSubmit);
   googleLoginBtn?.addEventListener('click', onGoogleLogin);
   authDialog?.addEventListener('close', onAuthDialogClose);
+  accountRequestTrigger?.addEventListener('click', () => openDialog(accountRequestDialog));
+  accountRequestCancel?.addEventListener('click', () => accountRequestDialog?.close());
+  accountRequestConfirm?.addEventListener('click', onAccountRequestConfirm);
+  accountRequestDialog?.addEventListener('close', resetAccountRequestDialog);
 
   setupDialogDismissal(storeDialog);
   setupDialogDismissal(uploadDialog);
   setupDialogDismissal(authDialog);
+  setupDialogDismissal(accountRequestDialog);
 
   storeList.addEventListener('click', onStoreListClick);
 }
@@ -226,6 +247,7 @@ async function loadAuth() {
 
 function applyAuthState(next) {
   if (!next || typeof next !== 'object') return;
+  const wasAuthenticated = authState.authenticated;
   authState.authenticated = Boolean(next.authenticated);
   authState.user = next.user || null;
   authState.staff = next.staff || null;
@@ -233,16 +255,38 @@ function applyAuthState(next) {
   authState.supabaseConfigured = Boolean(next.supabaseConfigured);
   authState.authConfigured = Boolean(next.authConfigured);
   updateAuthUi();
+  if (wasAuthenticated && !authState.authenticated) {
+    handleLoggedOut();
+  } else {
+    updateSessionHint();
+  }
 }
 
 function updateAuthUi() {
+  const isAuthed = authState.authenticated;
+  if (document.body) {
+    document.body.classList.toggle('show-login', !isAuthed);
+    document.body.classList.toggle('show-app', isAuthed);
+  }
+  if (appShell) {
+    appShell.hidden = !isAuthed;
+  }
+  if (loginScreen) {
+    loginScreen.hidden = isAuthed;
+    loginScreen.setAttribute('aria-hidden', isAuthed ? 'true' : 'false');
+    if (isAuthed) {
+      loginScreen.setAttribute('inert', '');
+    } else {
+      loginScreen.removeAttribute('inert');
+    }
+  }
   if (authTrigger) {
-    authTrigger.classList.toggle('is-hidden', authState.authenticated);
+    authTrigger.classList.toggle('is-hidden', isAuthed);
   }
   if (authUserContainer) {
-    authUserContainer.hidden = !authState.authenticated;
+    authUserContainer.hidden = !isAuthed;
   }
-  if (authState.authenticated && authState.user) {
+  if (isAuthed && authState.user) {
     const name = authState.user.displayName || authState.user.email || 'ユーザー';
     if (authUserLabel) authUserLabel.textContent = name;
     if (authUserInitial) authUserInitial.textContent = getInitials(name);
@@ -275,6 +319,59 @@ function updateAuthUi() {
       googleHint.textContent = 'Google OAuth を設定するとここからログインできます。';
     }
   }
+}
+
+function handleLoggedOut() {
+  hasBootstrapped = false;
+  clearSessionData();
+}
+
+function clearSessionData() {
+  sessionState.organizationId = null;
+  sessionState.officeId = null;
+  sessionState.staffId = null;
+  sessionState.threadId = null;
+  sessionState.supabaseConfigured = false;
+  organizationHierarchy = [];
+  threadCache = [];
+  storeCache = [];
+  storeFilesCache.clear();
+  delete storeList.dataset.loading;
+  if (storeError) {
+    storeError.textContent = '';
+  }
+  renderSessionSelectors();
+  renderThreads();
+  renderStores();
+  updateStoreSelect({ preserveSelection: false });
+  renderDocuments([]);
+  if (documentError) {
+    documentError.textContent = '';
+  }
+  if (storeFeedback) {
+    storeFeedback.textContent = '';
+  }
+  if (uploadSummary) {
+    uploadSummary.textContent = 'ファイルを選択すると詳細が表示されます。';
+  }
+  if (uploadFeedback) {
+    uploadFeedback.textContent = '';
+  }
+  if (submitUploadBtn) {
+    submitUploadBtn.disabled = true;
+  }
+  resetConversation();
+  updateSessionHint();
+}
+
+async function bootstrapAfterAuth(options = {}) {
+  const force = Boolean(options.force);
+  if (hasBootstrapped && !force) {
+    return;
+  }
+  hasBootstrapped = true;
+  await loadSession();
+  await Promise.all([loadStores({ force: true }), loadDocuments()]);
 }
 
 function openAuthDialog(mode = 'login') {
@@ -370,7 +467,11 @@ async function onLoginSubmit(event) {
     applyAuthState(data.auth);
     if (data.session) {
       applySessionPayload(data.session);
-      loadStores({ force: true });
+    }
+    try {
+      await bootstrapAfterAuth({ force: true });
+    } catch (bootstrapError) {
+      console.error(bootstrapError);
     }
     authDialog?.close();
   } catch (error) {
@@ -458,7 +559,6 @@ async function onRegisterSubmit(event) {
 async function onLogout(event) {
   event?.preventDefault();
   if (!authState.authenticated) {
-    openAuthDialog('login');
     return;
   }
 
@@ -479,6 +579,8 @@ async function onLogout(event) {
       loadStores({ force: true });
       resetConversation();
     }
+    loginForm?.reset();
+    setAuthFeedback('');
   } catch (error) {
     console.error(error);
     alert(error.message || 'ログアウトに失敗しました');
@@ -501,6 +603,44 @@ function onGoogleLogin(event) {
   window.location.href = provider.url;
 }
 
+function onAccountRequestConfirm(event) {
+  event?.preventDefault();
+  if (!accountRequestDialog) return;
+  const stage = accountRequestDialog.dataset.stage || 'confirm';
+  const email = (accountRequestDialog.dataset.contactEmail || 'info@example.com').trim();
+
+  if (stage !== 'ready') {
+    if (accountRequestNotice) {
+      accountRequestNotice.textContent = `${email} 宛に申請メールの下書きを開きます。送信前に必要事項をご記入ください。`;
+    }
+    if (accountRequestConfirm) {
+      accountRequestConfirm.textContent = 'メールを作成';
+    }
+    accountRequestDialog.dataset.stage = 'ready';
+    return;
+  }
+
+  const subject = encodeURIComponent('アカウント発行申請');
+  const body = encodeURIComponent(
+    '以下の内容をご記入のうえ送信してください。\n\n企業名・事業所名:\nご担当者様名:\n電話番号:\n希望するスタッフ人数:\n利用開始希望日:\n補足事項:\n'
+  );
+
+  resetAccountRequestDialog();
+  accountRequestDialog.close();
+  window.location.href = `mailto:${email}?subject=${subject}&body=${body}`;
+}
+
+function resetAccountRequestDialog() {
+  if (!accountRequestDialog) return;
+  delete accountRequestDialog.dataset.stage;
+  if (accountRequestConfirm) {
+    accountRequestConfirm.textContent = 'はい';
+  }
+  if (accountRequestNotice) {
+    accountRequestNotice.textContent = 'メールアプリを開いて申請メールを作成しますか？';
+  }
+}
+
 function applySessionPayload(payload) {
   if (!payload || typeof payload !== 'object') {
     return;
@@ -513,6 +653,9 @@ function applySessionPayload(payload) {
 }
 
 async function loadSession() {
+  if (!authState.authenticated) {
+    return;
+  }
   try {
     const data = await safeFetch('/api/session');
     if (data?.error) {
@@ -555,6 +698,14 @@ function applySessionUpdate(nextSession, threads) {
 function renderSessionSelectors() {
   sessionOfficeSelect.innerHTML = '';
   sessionStaffSelect.innerHTML = '';
+
+  if (!authState.authenticated) {
+    sessionOfficeSelect.disabled = true;
+    sessionStaffSelect.disabled = true;
+    sessionOfficeSelect.innerHTML = '<option value="">ログインすると利用できます</option>';
+    sessionStaffSelect.innerHTML = '<option value="">ログインすると利用できます</option>';
+    return;
+  }
 
   if (!organizationHierarchy.length) {
     sessionOfficeSelect.disabled = true;
@@ -625,6 +776,11 @@ function renderSessionSelectors() {
 function renderThreads() {
   threadList.innerHTML = '';
 
+  if (!authState.authenticated) {
+    threadList.innerHTML = '<p class="empty-hint">ログインするとスレッドが表示されます。</p>';
+    return;
+  }
+
   if (!threadCache.length) {
     threadList.innerHTML = '<p class="empty-hint">スレッドはまだありません。右上から新規作成できます。</p>';
     return;
@@ -666,7 +822,7 @@ function renderThreads() {
 
 function updateSessionHint() {
   if (!sessionHint) return;
-  if (sessionState.supabaseConfigured && !authState.authenticated) {
+  if (!authState.authenticated) {
     sessionHint.textContent = 'ログインすると事業所ごとのスレッドが表示されます。';
   } else if (sessionState.supabaseConfigured) {
     sessionHint.textContent = 'スレッドを切り替えると会話履歴が Supabase に保存されます。';
@@ -954,6 +1110,10 @@ async function onDocumentSubmit(event) {
 }
 
 async function loadDocuments() {
+  if (!authState.authenticated) {
+    renderDocuments([]);
+    return;
+  }
   try {
     const data = await safeFetch('/api/documents');
     if (data?.error) throw new Error(data.error || 'ドキュメントの取得に失敗しました');
@@ -966,6 +1126,13 @@ async function loadDocuments() {
 }
 
 async function loadStores(options = {}) {
+  if (!authState.authenticated) {
+    storeError.textContent = '';
+    storeCache = [];
+    renderStores();
+    updateStoreSelect({ preserveSelection: false });
+    return;
+  }
   storeError.textContent = '';
   if (!options.silent) {
     storeList.dataset.loading = 'true';
@@ -1037,10 +1204,13 @@ function renderStores() {
 
   if (!storeCache.length) {
     storeEmpty.style.display = 'block';
-    storeEmpty.textContent =
-      authState.authenticated || !sessionState.supabaseConfigured
-        ? 'まだストアがありません。まずはストアを作成してください。'
-        : 'ログインすると事業所のストアが表示されます。';
+    if (!authState.authenticated) {
+      storeEmpty.textContent = 'ログインすると事業所のストアが表示されます。';
+    } else if (!sessionState.supabaseConfigured) {
+      storeEmpty.textContent = 'まだストアがありません。まずはストアを作成してください。';
+    } else {
+      storeEmpty.textContent = 'まだストアがありません。まずはストアを作成してください。';
+    }
     return;
   }
 
@@ -1376,6 +1546,7 @@ function updateStoreSelect(options = {}) {
     uploadStoreSelect.value = nextValue;
   }
 
+  uploadStoreSelect.disabled = !storeCache.length;
   updateUploadButtonState();
 }
 

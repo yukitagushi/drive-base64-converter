@@ -24,6 +24,197 @@ body {
   background: var(--bg);
 }
 
+body.show-login {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+
+body.show-login .app-shell {
+  display: none;
+}
+
+body.show-app #login-screen {
+  display: none;
+}
+
+#login-screen {
+  display: none;
+  position: relative;
+  width: 100%;
+  min-height: 100vh;
+  padding: clamp(32px, 8vw, 80px);
+  background: linear-gradient(180deg, #ffffff 0%, #eaeaea 100%);
+  overflow: hidden;
+}
+
+body.show-login #login-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-screen__scene {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+  filter: saturate(0.85);
+}
+
+.login-sun {
+  position: absolute;
+  top: clamp(40px, 10vw, 90px);
+  right: clamp(40px, 12vw, 160px);
+  width: clamp(120px, 18vw, 200px);
+  height: clamp(120px, 18vw, 200px);
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, rgba(255, 215, 0, 0.45), rgba(0, 0, 0, 0));
+}
+
+.login-city {
+  position: absolute;
+  bottom: clamp(140px, 18vh, 220px);
+  left: 50%;
+  width: min(720px, 90vw);
+  height: clamp(120px, 22vh, 200px);
+  transform: translateX(-50%);
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.18));
+  border-radius: 40px;
+  mask: radial-gradient(circle at 20% 80%, rgba(0, 0, 0, 0.9), transparent 70%),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.85));
+}
+
+.login-road {
+  position: absolute;
+  bottom: clamp(48px, 8vh, 96px);
+  left: 50%;
+  width: min(840px, 95vw);
+  height: clamp(90px, 14vh, 140px);
+  transform: translateX(-50%);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.35));
+  border-radius: 60px;
+  overflow: hidden;
+}
+
+.login-road::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 60%;
+  height: 6px;
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.65) 0 24px,
+    transparent 24px 36px
+  );
+  border-radius: 6px;
+}
+
+.login-card {
+  position: relative;
+  z-index: 1;
+  width: min(420px, 100%);
+  display: grid;
+  gap: 24px;
+  padding: clamp(28px, 6vw, 44px);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(26px);
+  border-radius: 32px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 32px 64px rgba(0, 0, 0, 0.12);
+}
+
+.login-card__header {
+  display: grid;
+  gap: 12px;
+  text-align: center;
+}
+
+.login-brand {
+  font-size: 13px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.login-title {
+  margin: 0;
+  font-size: clamp(24px, 4vw, 30px);
+  letter-spacing: 0.08em;
+}
+
+.login-subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.login-card__body {
+  display: grid;
+  gap: 18px;
+}
+
+.login-form {
+  display: grid;
+  gap: 16px;
+}
+
+.login-forgot {
+  margin: 0;
+  text-align: right;
+  font-size: 13px;
+}
+
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: rgba(0, 0, 0, 0.55);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+}
+
+.login-divider__line {
+  flex: 1;
+  height: 1px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.login-social {
+  display: grid;
+  gap: 12px;
+}
+
+.login-links {
+  display: flex;
+  justify-content: center;
+}
+
+.login-link {
+  border: none;
+  background: none;
+  color: rgba(0, 0, 0, 0.75);
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+
+.login-link:hover {
+  color: #000;
+}
+
+.login-hint,
+#google-hint {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.55);
+  margin: 0;
+}
+
 .app-shell {
   min-height: 100vh;
   display: flex;
@@ -745,6 +936,22 @@ body {
 .modal__body {
   display: grid;
   gap: 18px;
+}
+
+.modal-list {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.modal__notice {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.75);
+  line-height: 1.6;
 }
 
 .modal__intro {

@@ -12,7 +12,58 @@
     />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body class="show-login">
+    <div id="login-screen" class="login-screen">
+      <div class="login-screen__scene" aria-hidden="true">
+        <div class="login-sun"></div>
+        <div class="login-city"></div>
+        <div class="login-road"></div>
+      </div>
+      <div class="login-card" role="dialog" aria-labelledby="login-title">
+        <header class="login-card__header">
+          <span class="login-brand">Gemini Lounge</span>
+          <h1 id="login-title" class="login-title">チーム専用ログイン</h1>
+          <p class="login-subtitle">契約済みの事業所スタッフのみがアクセスできます。</p>
+        </header>
+        <div class="login-card__body">
+          <form id="login-form" class="login-form" autocomplete="off">
+            <label class="field">
+              <span class="field__label">メールアドレス</span>
+              <input type="email" id="login-email" name="email" autocomplete="email" required />
+            </label>
+            <label class="field">
+              <span class="field__label">ログインパスワード</span>
+              <input type="password" id="login-password" name="password" autocomplete="current-password" required minlength="6" />
+            </label>
+            <button class="btn btn-solid" type="submit">ログイン</button>
+            <p id="auth-feedback" class="form-error" role="alert"></p>
+          </form>
+          <p class="login-forgot">
+            <a
+              id="forgot-password"
+              class="login-link"
+              href="mailto:info@example.com?subject=%E3%83%91%E3%82%B9%E3%83%AF%E3%83%BC%E3%83%89%E5%86%8D%E8%A8%AD%E5%AE%9A%E3%81%AE%E3%81%8A%E5%90%91%E3%81%91"
+            >パスワードを忘れた方はこちら</a>
+          </p>
+          <div class="login-divider" role="presentation">
+            <span class="login-divider__line"></span>
+            <span class="login-divider__label">または連携ログイン</span>
+            <span class="login-divider__line"></span>
+          </div>
+          <div class="login-social">
+            <button id="google-login" class="btn btn-google" type="button">
+              <span class="btn-google__icon" aria-hidden="true">G</span>
+              <span>Google でログイン</span>
+            </button>
+            <p id="google-hint" class="field-hint"></p>
+          </div>
+          <div class="login-links">
+            <button id="account-request-trigger" class="login-link" type="button">初めてのご利用はこちら</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="app-shell">
       <header class="top-bar">
         <div class="top-bar__brand">
@@ -28,7 +79,6 @@
             <button id="open-store" class="btn btn-outline" type="button">ストアを作成</button>
           </div>
           <div class="auth-cluster">
-            <button id="auth-trigger" class="btn btn-outline" type="button">ログイン</button>
             <div id="auth-user" class="auth-user" hidden>
               <button
                 id="auth-user-button"
@@ -221,82 +271,33 @@
       </form>
     </dialog>
 
-    <dialog id="auth-dialog" class="modal">
-      <div class="modal__surface auth-surface">
+    <dialog
+      id="account-request-dialog"
+      class="modal"
+      data-contact-email="info@example.com"
+    >
+      <div class="modal__surface">
         <header class="modal__header">
-          <h2>アカウント</h2>
-          <button class="btn btn-icon" type="button" data-close-dialog="auth-dialog" aria-label="閉じる">×</button>
+          <h2>アカウント発行申請</h2>
+          <button class="btn btn-icon" type="button" data-close-dialog="account-request-dialog" aria-label="閉じる">×</button>
         </header>
-        <div class="modal__body auth-body">
-          <div class="auth-tabs" role="tablist">
-            <button
-              type="button"
-              class="auth-tab is-active"
-              role="tab"
-              aria-selected="true"
-              data-auth-tab="login"
-            >
-              ログイン
-            </button>
-            <button type="button" class="auth-tab" role="tab" aria-selected="false" data-auth-tab="register">
-              新規登録
-            </button>
-          </div>
-
-          <section class="auth-panel is-active" data-auth-panel="login" role="tabpanel">
-            <p class="modal__intro">
-              既存のスタッフはメールアドレスまたは Google アカウントでログインできます。
-            </p>
-            <button id="google-login" class="btn btn-solid btn-google" type="button">
-              <span class="btn-google__icon" aria-hidden="true">G</span>
-              <span>Google でログイン</span>
-            </button>
-            <p id="google-hint" class="field-hint"></p>
-            <form id="login-form" class="auth-form" autocomplete="off">
-              <label class="field">
-                <span class="field__label">メールアドレス</span>
-                <input type="email" name="email" id="login-email" required />
-              </label>
-              <label class="field">
-                <span class="field__label">パスワード</span>
-                <input type="password" name="password" id="login-password" required minlength="6" />
-              </label>
-              <button class="btn btn-solid" type="submit">メールアドレスでログイン</button>
-            </form>
-          </section>
-
-          <section class="auth-panel" data-auth-panel="register" role="tabpanel" hidden>
-            <p class="modal__intro">
-              新しい事業所を登録する場合は、基本情報とスタッフ名を入力してください。
-            </p>
-            <form id="register-form" class="auth-form" autocomplete="off">
-              <label class="field">
-                <span class="field__label">氏名</span>
-                <input type="text" name="displayName" id="register-name" required />
-              </label>
-              <label class="field">
-                <span class="field__label">メールアドレス</span>
-                <input type="email" name="email" id="register-email" required />
-              </label>
-              <label class="field">
-                <span class="field__label">パスワード</span>
-                <input type="password" name="password" id="register-password" required minlength="6" />
-              </label>
-              <label class="field">
-                <span class="field__label">企業 / 組織名</span>
-                <input type="text" name="organizationName" id="register-organization" placeholder="例: デモ株式会社" />
-              </label>
-              <label class="field">
-                <span class="field__label">事業所名</span>
-                <input type="text" name="officeName" id="register-office" placeholder="例: 東京本社" />
-              </label>
-              <button class="btn btn-solid" type="submit">アカウントを作成</button>
-              <p class="field-hint">登録後に確認メールが届く場合があります。</p>
-            </form>
-          </section>
+        <div class="modal__body">
+          <p class="modal__intro">
+            初回は管理チームが手動でアカウントを発行します。以下の情報を添えて info 宛にメールをご送付ください。
+          </p>
+          <ul class="modal-list">
+            <li>企業名・事業所名</li>
+            <li>ご担当者さまのお名前と連絡先</li>
+            <li>希望するスタッフの人数</li>
+            <li>利用開始希望日</li>
+          </ul>
+          <p id="account-request-notice" class="modal__notice">
+            メールアプリを開いて申請メールを作成しますか？
+          </p>
         </div>
-        <footer class="modal__footer auth-footer">
-          <p id="auth-feedback" class="form-error" role="alert"></p>
+        <footer class="modal__footer">
+          <button id="account-request-cancel" class="btn btn-ghost" type="button">いいえ</button>
+          <button id="account-request-confirm" class="btn btn-solid" type="button">はい</button>
         </footer>
       </div>
     </dialog>
