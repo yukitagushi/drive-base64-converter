@@ -1,10 +1,13 @@
 const appShell = document.querySelector('.app-shell');
+const landingScreen = document.getElementById('landing-screen');
 const loginScreen = document.getElementById('login-screen');
 const accountRequestTrigger = document.getElementById('account-request-trigger');
 const accountRequestDialog = document.getElementById('account-request-dialog');
 const accountRequestNotice = document.getElementById('account-request-notice');
 const accountRequestConfirm = document.getElementById('account-request-confirm');
 const accountRequestCancel = document.getElementById('account-request-cancel');
+const landingRequestButton = document.getElementById('landing-request');
+const loginBackButton = document.getElementById('login-back');
 
 const messageList = document.getElementById('message-list');
 const chatForm = document.getElementById('chat-form');
@@ -100,6 +103,7 @@ let threadCache = [];
 let hasBootstrapped = false;
 
 let authMenuOpen = false;
+let loginVisible = false;
 
 const SAMPLE_NOTES = [
   {
@@ -199,10 +203,8 @@ async function init() {
     }
   });
 
-  authTrigger?.addEventListener('click', () => {
-    closeAuthMenu();
-    openAuthDialog('login');
-  });
+  authTrigger?.addEventListener('click', showLoginScreen);
+  loginBackButton?.addEventListener('click', hideLoginScreen);
   authUserButton?.addEventListener('click', onAuthUserButtonClick);
   authMenuLogout?.addEventListener('click', onLogout);
   authTabs.forEach((tab) => {
@@ -213,6 +215,7 @@ async function init() {
   googleLoginBtn?.addEventListener('click', onGoogleLogin);
   authDialog?.addEventListener('close', onAuthDialogClose);
   accountRequestTrigger?.addEventListener('click', () => openDialog(accountRequestDialog));
+  landingRequestButton?.addEventListener('click', () => openDialog(accountRequestDialog));
   accountRequestCancel?.addEventListener('click', () => accountRequestDialog?.close());
   accountRequestConfirm?.addEventListener('click', onAccountRequestConfirm);
   accountRequestDialog?.addEventListener('close', resetAccountRequestDialog);
@@ -264,24 +267,40 @@ function applyAuthState(next) {
 
 function updateAuthUi() {
   const isAuthed = authState.authenticated;
+  if (isAuthed && loginVisible) {
+    loginVisible = false;
+  }
+  const showLogin = !isAuthed && loginVisible;
+  const showLanding = !isAuthed && !loginVisible;
+
   if (document.body) {
-    document.body.classList.toggle('show-login', !isAuthed);
     document.body.classList.toggle('show-app', isAuthed);
+    document.body.classList.toggle('show-login', showLogin);
+    document.body.classList.toggle('show-landing', showLanding);
   }
   if (appShell) {
     appShell.hidden = !isAuthed;
   }
-  if (loginScreen) {
-    loginScreen.hidden = isAuthed;
-    loginScreen.setAttribute('aria-hidden', isAuthed ? 'true' : 'false');
-    if (isAuthed) {
-      loginScreen.setAttribute('inert', '');
+  if (landingScreen) {
+    landingScreen.hidden = !showLanding;
+    landingScreen.setAttribute('aria-hidden', showLanding ? 'false' : 'true');
+    if (showLanding) {
+      landingScreen.removeAttribute('inert');
     } else {
+      landingScreen.setAttribute('inert', '');
+    }
+  }
+  if (loginScreen) {
+    loginScreen.hidden = !showLogin;
+    loginScreen.setAttribute('aria-hidden', showLogin ? 'false' : 'true');
+    if (showLogin) {
       loginScreen.removeAttribute('inert');
+    } else {
+      loginScreen.setAttribute('inert', '');
     }
   }
   if (authTrigger) {
-    authTrigger.classList.toggle('is-hidden', isAuthed);
+    authTrigger.classList.toggle('is-hidden', !showLanding);
   }
   if (authUserContainer) {
     authUserContainer.hidden = !isAuthed;
@@ -321,9 +340,32 @@ function updateAuthUi() {
   }
 }
 
+function showLoginScreen() {
+  if (authState.authenticated) {
+    return;
+  }
+  closeAuthMenu();
+  loginVisible = true;
+  updateAuthUi();
+  window.requestAnimationFrame(() => {
+    loginEmailInput?.focus();
+  });
+}
+
+function hideLoginScreen() {
+  if (authState.authenticated) {
+    return;
+  }
+  loginVisible = false;
+  setAuthFeedback('');
+  updateAuthUi();
+}
+
 function handleLoggedOut() {
   hasBootstrapped = false;
+  loginVisible = false;
   clearSessionData();
+  updateAuthUi();
 }
 
 function clearSessionData() {
