@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gemini ナレッジラウンジ</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Noto+Sans+JP:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">◎</span>
+          <div class="brand-name">
+            <span class="title">Gemini Lounge</span>
+            <span class="subtitle">AI ナレッジ検索スタジオ</span>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button id="openKeyModal" class="ghost-button">API 設定</button>
+          <button id="openStoreModal" class="primary-button">ナレッジを追加</button>
+        </div>
+      </header>
+      <main class="layout">
+        <aside class="panel" id="storesPanel">
+          <div class="panel-header">
+            <h2>ナレッジストア</h2>
+            <button id="refreshStores" class="ghost-button ghost-small">更新</button>
+          </div>
+          <div id="storesList" class="stores"></div>
+          <div class="panel-footer">
+            <p class="hint">ファイル検索を活用した Gemini ナレッジストア。<br />ストアを選択するとチャットが開始できます。</p>
+          </div>
+        </aside>
+        <section class="chat" id="chatSection">
+          <div class="chat-header">
+            <div class="chat-context">
+              <h1 id="activeStoreTitle">ストアが選択されていません</h1>
+              <p id="activeStoreMeta">左のリストからストアを選ぶか、新しく作成してください。</p>
+            </div>
+            <div class="chat-actions">
+              <button id="openUploadModal" class="ghost-button" disabled>ファイルを追加</button>
+              <button id="clearConversation" class="ghost-button" disabled>チャット履歴をリセット</button>
+            </div>
+          </div>
+          <div id="chatStream" class="chat-stream"></div>
+          <form id="chatForm" class="chat-form">
+            <textarea id="chatInput" rows="1" placeholder="Gemini に質問..." disabled></textarea>
+            <button type="submit" class="primary-button" disabled>送信</button>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" data-modal="key" hidden>
+      <div class="modal">
+        <header>
+          <h2>Gemini API 設定</h2>
+        </header>
+        <form id="keyForm" class="modal-body">
+          <label>
+            <span>API Key</span>
+            <input type="password" id="apiKey" placeholder="AIza..." required />
+          </label>
+          <label>
+            <span>Project ID / Number</span>
+            <input type="text" id="projectId" placeholder="my-gemini-project" required />
+          </label>
+          <label>
+            <span>Location (例: global)</span>
+            <input type="text" id="location" placeholder="global" value="global" required />
+          </label>
+          <p class="modal-hint">
+            この情報はブラウザのローカルストレージに保存され、外部へ送信されません。
+          </p>
+          <div class="modal-actions">
+            <button type="button" class="ghost-button" data-close>キャンセル</button>
+            <button type="submit" class="primary-button">保存</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" data-modal="store" hidden>
+      <div class="modal">
+        <header>
+          <h2>ストアを作成</h2>
+        </header>
+        <form id="storeForm" class="modal-body">
+          <label>
+            <span>ストア名</span>
+            <input type="text" id="storeName" placeholder="製品ドキュメント" required />
+          </label>
+          <label>
+            <span>メモ (任意)</span>
+            <textarea id="storeNote" rows="3" placeholder="用途や対象データの説明"></textarea>
+          </label>
+          <div class="modal-actions">
+            <button type="button" class="ghost-button" data-close>キャンセル</button>
+            <button type="submit" class="primary-button">作成</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" data-modal="upload" hidden>
+      <div class="modal">
+        <header>
+          <h2>ファイルをアップロード</h2>
+        </header>
+        <form id="uploadForm" class="modal-body">
+          <label class="file-drop" for="uploadFile">
+            <span id="uploadLabel">ファイルを選択またはドロップ (PDF / TXT / MD など)</span>
+            <input type="file" id="uploadFile" hidden />
+          </label>
+          <label>
+            <span>表示名 (任意)</span>
+            <input type="text" id="uploadDisplayName" placeholder="京都府データ 2024" />
+          </label>
+          <p class="modal-hint">
+            ファイルは Google Gemini の File Search ストアに保存されます。アップロード前に API 設定とストアを確認してください。
+          </p>
+          <div class="modal-actions">
+            <button type="button" class="ghost-button" data-close>キャンセル</button>
+            <button type="submit" class="primary-button">アップロード</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <template id="storeTemplate">
+      <article class="store-card">
+        <div class="store-head">
+          <h3></h3>
+          <button class="ghost-button ghost-small" data-action="set-active">開く</button>
+        </div>
+        <p class="store-meta"></p>
+        <ul class="store-files"></ul>
+        <div class="store-actions">
+          <button class="ghost-button ghost-small" data-action="upload">ファイル追加</button>
+          <button class="ghost-button ghost-small" data-action="refresh">更新</button>
+          <button class="ghost-button ghost-small danger" data-action="delete">削除</button>
+        </div>
+      </article>
+    </template>
+
+    <template id="messageTemplate">
+      <div class="message">
+        <div class="avatar"></div>
+        <div class="bubble">
+          <div class="bubble-text"></div>
+          <div class="citations"></div>
+        </div>
+      </div>
+    </template>
+
+    <div class="status-toast" id="statusToast" data-visible="false"></div>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>
