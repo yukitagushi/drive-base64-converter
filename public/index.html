@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gemini Lounge</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="top-bar">
+        <div class="top-bar__brand">
+          <span class="brand-mark">◎</span>
+          <div class="brand-copy">
+            <span class="brand-title">Gemini Lounge</span>
+            <span class="brand-subtitle">ファイルサーチ対応ナレッジシステム</span>
+          </div>
+        </div>
+        <div class="top-bar__actions">
+          <button id="open-upload" class="btn btn-solid" type="button">ファイルをアップロード</button>
+          <button id="open-store" class="btn btn-outline" type="button">ストアを作成</button>
+        </div>
+      </header>
+
+      <main class="main-grid">
+        <section class="panel chat-panel" aria-label="Gemini とのチャット">
+          <header class="panel__header">
+            <h1 class="panel__title">チャット</h1>
+            <p class="panel__subtitle">
+              右側のナレッジやファイルサーチストアを使って Gemini に質問できます。
+            </p>
+          </header>
+          <div id="message-list" class="message-list" role="log" aria-live="polite"></div>
+          <form id="chat-form" class="chat-form" autocomplete="off">
+            <label class="field">
+              <span class="field__label">質問</span>
+              <textarea
+                id="chat-input"
+                class="chat-input"
+                rows="1"
+                placeholder="Gemini に質問する..."
+                required
+              ></textarea>
+            </label>
+            <div class="chat-footer">
+              <span id="status-indicator" class="status-indicator"></span>
+              <button class="btn btn-solid" type="submit">送信</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="side-stack" aria-label="ナレッジ管理">
+          <section class="panel info-panel">
+            <header class="panel__header">
+              <h2 class="panel__title">Gemini API</h2>
+              <p class="panel__subtitle">ステータスを確認し、ファイルサーチを操作します。</p>
+            </header>
+            <div class="panel__body">
+              <div class="status-pill">
+                <span class="status-dot" aria-hidden="true"></span>
+                <span id="api-status" class="status-text">状態を確認しています...</span>
+              </div>
+              <button id="refresh-stores" class="btn btn-ghost" type="button">ストアを再読み込み</button>
+            </div>
+            <div class="panel__section">
+              <h3 class="section-title">ファイルサーチストア</h3>
+              <p id="store-error" class="form-error" role="alert"></p>
+              <div id="store-list" class="store-list"></div>
+              <p id="store-empty" class="empty-hint">まだストアがありません。まずはストアを作成してください。</p>
+            </div>
+          </section>
+
+          <section class="panel info-panel">
+            <header class="panel__header">
+              <h2 class="panel__title">カスタムノート</h2>
+              <p class="panel__subtitle">短いテキストを埋め込み、コンテキストとして利用できます。</p>
+            </header>
+            <div class="panel__body">
+              <div id="document-list" class="document-list"></div>
+            </div>
+            <div class="panel__section">
+              <form id="document-form" class="document-form" autocomplete="off">
+                <label class="field">
+                  <span class="field__label">タイトル</span>
+                  <input type="text" id="doc-title" required maxlength="120" />
+                </label>
+                <label class="field">
+                  <span class="field__label">内容</span>
+                  <textarea
+                    id="doc-content"
+                    rows="6"
+                    required
+                    placeholder="ナレッジとして追加したいテキストを貼り付けてください"
+                  ></textarea>
+                </label>
+                <p class="field-hint">テキストは Gemini の埋め込みによりチャットへ反映されます。</p>
+                <button class="btn btn-solid" type="submit">ノートを保存</button>
+                <p id="document-error" class="form-error" role="alert"></p>
+              </form>
+            </div>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <dialog id="store-dialog" class="modal">
+      <form id="store-form" class="modal__surface" method="dialog" autocomplete="off">
+        <header class="modal__header">
+          <h2>ファイルサーチストアを作成</h2>
+          <button class="btn btn-icon" type="button" data-close-dialog="store-dialog" aria-label="閉じる">×</button>
+        </header>
+        <div class="modal__body">
+          <p class="modal__intro">Gemini File Search で利用する新しいストア名を入力してください。</p>
+          <label class="field">
+            <span class="field__label">ストア名</span>
+            <input type="text" id="store-name" required maxlength="60" placeholder="例: プロジェクトドキュメント" />
+          </label>
+          <p id="store-feedback" class="form-error" role="alert"></p>
+        </div>
+        <footer class="modal__footer">
+          <button class="btn btn-ghost" type="button" data-close-dialog="store-dialog">キャンセル</button>
+          <button id="submit-store" class="btn btn-solid" type="submit">作成</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="upload-dialog" class="modal">
+      <form id="upload-form" class="modal__surface" method="dialog" autocomplete="off">
+        <header class="modal__header">
+          <h2>Gemini にファイルをアップロード</h2>
+          <button class="btn btn-icon" type="button" data-close-dialog="upload-dialog" aria-label="閉じる">×</button>
+        </header>
+        <div class="modal__body">
+          <p class="modal__intro">
+            PDF / TXT / MD などのファイルを選択し、保存するファイルサーチストアを指定してください。
+          </p>
+          <label class="field">
+            <span class="field__label">ファイル</span>
+            <input type="file" id="upload-file" accept=".pdf,.txt,.md,.csv,.doc,.docx,.ppt,.pptx,.json,.yaml,.yml,.xml,.html,.zip" required />
+            <span id="upload-summary" class="field-hint">ファイルを選択すると詳細が表示されます。</span>
+          </label>
+          <label class="field">
+            <span class="field__label">保存先ストア</span>
+            <select id="upload-store" required disabled>
+              <option value="">ストアを選択してください</option>
+            </select>
+            <span class="field-hint">ストアが未作成の場合は、先にストアを作成してください。</span>
+          </label>
+          <label class="field">
+            <span class="field__label">メモ (任意)</span>
+            <textarea id="upload-notes" rows="3" placeholder="ファイルに関するメモがあれば入力してください"></textarea>
+          </label>
+          <p id="upload-feedback" class="form-error" role="alert"></p>
+        </div>
+        <footer class="modal__footer">
+          <button class="btn btn-ghost" type="button" data-close-dialog="upload-dialog">キャンセル</button>
+          <button id="submit-upload" class="btn btn-solid" type="submit" disabled>アップロード</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <template id="message-template">
+      <article class="message">
+        <div class="message-meta"></div>
+        <div class="message-body"></div>
+      </article>
+    </template>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
