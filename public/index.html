@@ -58,6 +58,35 @@
         <aside class="side-stack" aria-label="ナレッジ管理">
           <section class="panel info-panel">
             <header class="panel__header">
+              <h2 class="panel__title">チームセッション</h2>
+              <p class="panel__subtitle">
+                事業所とスタッフを選択し、スレッド単位で Gemini との会話を整理します。
+              </p>
+            </header>
+            <div class="panel__section grid gap-sm">
+              <label class="field">
+                <span class="field__label">事業所</span>
+                <select id="session-office" aria-label="事業所を選択"></select>
+              </label>
+              <label class="field">
+                <span class="field__label">スタッフ</span>
+                <select id="session-staff" aria-label="スタッフを選択"></select>
+              </label>
+            </div>
+            <div class="panel__section">
+              <div class="session-actions">
+                <button id="start-thread" class="btn btn-outline" type="button">新しいスレッドを開始</button>
+                <span class="session-hint">スレッドを切り替えると会話履歴が Supabase に保存されます。</span>
+              </div>
+            </div>
+            <div class="panel__section">
+              <h3 class="section-title">最近のスレッド</h3>
+              <div id="thread-list" class="thread-list"></div>
+            </div>
+          </section>
+
+          <section class="panel info-panel">
+            <header class="panel__header">
               <h2 class="panel__title">Gemini API</h2>
               <p class="panel__subtitle">ステータスを確認し、ファイルサーチを操作します。</p>
             </header>
@@ -78,8 +107,8 @@
 
           <section class="panel info-panel">
             <header class="panel__header">
-              <h2 class="panel__title">カスタムノート</h2>
-              <p class="panel__subtitle">短いテキストを埋め込み、コンテキストとして利用できます。</p>
+              <h2 class="panel__title">ナレッジメモ</h2>
+              <p class="panel__subtitle">チャットで参照したい短いメモやリンクを 2〜3 行で整理します。</p>
             </header>
             <div class="panel__body">
               <div id="document-list" class="document-list"></div>
@@ -94,13 +123,13 @@
                   <span class="field__label">内容</span>
                   <textarea
                     id="doc-content"
-                    rows="6"
+                    rows="4"
                     required
-                    placeholder="ナレッジとして追加したいテキストを貼り付けてください"
+                    placeholder="Gemini に共有したいポイントを 2〜3 行で入力してください"
                   ></textarea>
                 </label>
-                <p class="field-hint">テキストは Gemini の埋め込みによりチャットへ反映されます。</p>
-                <button class="btn btn-solid" type="submit">ノートを保存</button>
+                <p class="field-hint">保存すると埋め込みが更新され、次回以降の回答に反映されます。</p>
+                <button class="btn btn-solid" type="submit">メモを保存</button>
                 <p id="document-error" class="form-error" role="alert"></p>
               </form>
             </div>

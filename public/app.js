@@ -11,6 +11,12 @@ const storeList = document.getElementById('store-list');
 const storeEmpty = document.getElementById('store-empty');
 const storeError = document.getElementById('store-error');
 
+const sessionOfficeSelect = document.getElementById('session-office');
+const sessionStaffSelect = document.getElementById('session-staff');
+const startThreadBtn = document.getElementById('start-thread');
+const threadList = document.getElementById('thread-list');
+const sessionHint = document.querySelector('.session-hint');
+
 const openStoreBtn = document.getElementById('open-store');
 const storeDialog = document.getElementById('store-dialog');
 const storeForm = document.getElementById('store-form');
@@ -39,9 +45,34 @@ let isSending = false;
 let storeCache = [];
 const storeFilesCache = new Map();
 
+const sessionState = {
+  organizationId: null,
+  officeId: null,
+  staffId: null,
+  threadId: null,
+  supabaseConfigured: false,
+};
+
+let organizationHierarchy = [];
+let threadCache = [];
+
+const SAMPLE_NOTES = [
+  {
+    title: 'サンプル: Gemini への依頼方法',
+    preview: '補助金・制度の質問は日付と対象者を明記して質問すると正確な回答になりやすいです。',
+    tokens: 64,
+  },
+  {
+    title: 'サンプル: アップロードのヒント',
+    preview: 'PDF や議事録をファイルサーチに登録すると、チャットで即座に引用できるようになります。',
+    tokens: 58,
+  },
+];
+
 init();
 
-function init() {
+async function init() {
+  await loadSession();
   fetchState();
   loadStores();
   loadDocuments();
@@ -55,6 +86,11 @@ function init() {
 
   openStoreBtn.addEventListener('click', () => openDialog(storeDialog));
   openUploadBtn.addEventListener('click', handleOpenUploadDialog);
+
+  sessionOfficeSelect.addEventListener('change', onSessionOfficeChange);
+  sessionStaffSelect.addEventListener('change', onSessionStaffChange);
+  startThreadBtn.addEventListener('click', onStartThread);
+  threadList.addEventListener('click', onThreadListClick);
 
   storeForm.addEventListener('submit', onCreateStore);
   storeDialog.addEventListener('close', () => {
@@ -89,6 +125,321 @@ function init() {
   setupDialogDismissal(uploadDialog);
 
   storeList.addEventListener('click', onStoreListClick);
+}
+
+async function loadSession() {
+  try {
+    const res = await fetch('/api/session');
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'セッション情報の取得に失敗しました');
+    }
+    organizationHierarchy = data.hierarchy || [];
+    sessionState.supabaseConfigured = Boolean(data.supabaseConfigured);
+    applySessionUpdate(data.session, data.threads);
+    renderSessionSelectors();
+    renderThreads();
+  } catch (error) {
+    console.error(error);
+    threadList.innerHTML = '<p class="empty-hint">セッション情報を読み込めませんでした。</p>';
+    sessionOfficeSelect.disabled = true;
+    sessionStaffSelect.disabled = true;
+    updateSessionHint();
+  }
+}
+
+function applySessionUpdate(nextSession, threads) {
+  if (nextSession && typeof nextSession === 'object') {
+    const previousThread = sessionState.threadId;
+    sessionState.organizationId = nextSession.organizationId || null;
+    sessionState.officeId = nextSession.officeId || null;
+    sessionState.staffId = nextSession.staffId || null;
+    sessionState.threadId = nextSession.threadId || null;
+    if (typeof nextSession.supabaseConfigured === 'boolean') {
+      sessionState.supabaseConfigured = nextSession.supabaseConfigured;
+    }
+
+    if (previousThread && previousThread !== sessionState.threadId) {
+      resetConversation();
+    }
+  }
+
+  if (Array.isArray(threads)) {
+    threadCache = threads.map(normalizeThread).filter(Boolean);
+    renderThreads();
+  }
+
+  updateSessionHint();
+}
+
+function renderSessionSelectors() {
+  sessionOfficeSelect.innerHTML = '';
+  sessionStaffSelect.innerHTML = '';
+
+  if (!organizationHierarchy.length) {
+    sessionOfficeSelect.disabled = true;
+    sessionStaffSelect.disabled = true;
+    sessionOfficeSelect.innerHTML = '<option value="">事業所が未登録です</option>';
+    sessionStaffSelect.innerHTML = '<option value="">スタッフが未登録です</option>';
+    return;
+  }
+
+  const officeFragment = document.createDocumentFragment();
+  organizationHierarchy.forEach((org) => {
+    const group = document.createElement('optgroup');
+    group.label = org.name;
+    (org.offices || []).forEach((office) => {
+      const option = document.createElement('option');
+      option.value = office.id;
+      option.textContent = office.name;
+      if (office.id === sessionState.officeId) {
+        option.selected = true;
+      }
+      group.appendChild(option);
+    });
+    officeFragment.appendChild(group);
+  });
+
+  sessionOfficeSelect.appendChild(officeFragment);
+  sessionOfficeSelect.disabled = false;
+
+  const activeOffice = organizationHierarchy
+    .flatMap((org) => org.offices || [])
+    .find((office) => office.id === sessionState.officeId) ||
+    organizationHierarchy[0]?.offices?.[0];
+
+  if (!sessionState.officeId && activeOffice) {
+    sessionState.officeId = activeOffice.id;
+  }
+
+  if (!activeOffice || !activeOffice.staff?.length) {
+    sessionStaffSelect.disabled = true;
+    sessionStaffSelect.innerHTML = '<option value="">スタッフが未登録です</option>';
+  } else {
+    const staffFragment = document.createDocumentFragment();
+    activeOffice.staff.forEach((member) => {
+      const option = document.createElement('option');
+      option.value = member.id;
+      option.textContent = `${member.displayName} (${member.email})`;
+      const shouldSelect =
+        member.id === sessionState.staffId || (!sessionState.staffId && staffFragment.childNodes.length === 0);
+      if (shouldSelect) {
+        option.selected = true;
+        sessionState.staffId = member.id;
+      }
+      staffFragment.appendChild(option);
+    });
+    sessionStaffSelect.appendChild(staffFragment);
+    sessionStaffSelect.disabled = false;
+  }
+}
+
+function renderThreads() {
+  threadList.innerHTML = '';
+
+  if (!threadCache.length) {
+    threadList.innerHTML = '<p class="empty-hint">スレッドはまだありません。右上から新規作成できます。</p>';
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  threadCache.forEach((thread) => {
+    const card = document.createElement('article');
+    card.className = 'thread-card';
+    card.dataset.threadId = thread.id;
+    if (thread.id === sessionState.threadId) {
+      card.classList.add('is-active');
+    }
+
+    const title = document.createElement('h4');
+    title.className = 'thread-card__title';
+    title.textContent = thread.title || '無題のスレッド';
+
+    const meta = document.createElement('p');
+    meta.className = 'thread-card__meta';
+    meta.textContent = formatThreadMeta(thread);
+
+    const preview = document.createElement('p');
+    preview.className = 'thread-card__preview';
+    const lastMessage = thread.lastMessage && typeof thread.lastMessage === 'string'
+      ? { content: thread.lastMessage }
+      : thread.lastMessage;
+    preview.textContent = lastMessage?.content || 'まだメッセージがありません。';
+
+    card.appendChild(title);
+    card.appendChild(meta);
+    card.appendChild(preview);
+
+    fragment.appendChild(card);
+  });
+
+  threadList.appendChild(fragment);
+}
+
+function updateSessionHint() {
+  if (!sessionHint) return;
+  sessionHint.textContent = sessionState.supabaseConfigured
+    ? 'スレッドを切り替えると会話履歴が Supabase に保存されます。'
+    : 'スレッド切り替えはローカルセッション内でのみ保持されます。';
+}
+
+function resetConversation() {
+  conversationHistory = [];
+  messageList.innerHTML = '';
+  setStatus('ジェミニ準備完了');
+}
+
+function normalizeThread(thread) {
+  if (!thread || !thread.id) return null;
+  const last = thread.lastMessage || thread.last_message || null;
+  return {
+    id: thread.id,
+    officeId: thread.officeId || thread.office_id || sessionState.officeId,
+    staffId: thread.staffId || thread.staff_id || sessionState.staffId,
+    title: thread.title || '無題のスレッド',
+    createdAt: thread.createdAt || thread.created_at || new Date().toISOString(),
+    updatedAt: thread.updatedAt || thread.updated_at || new Date().toISOString(),
+    lastMessage: typeof last === 'string' ? { content: last } : last,
+  };
+}
+
+function upsertThread(thread) {
+  const normalized = normalizeThread(thread);
+  if (!normalized) return;
+  const index = threadCache.findIndex((item) => item.id === normalized.id);
+  if (index === -1) {
+    threadCache.unshift(normalized);
+  } else {
+    threadCache[index] = { ...threadCache[index], ...normalized };
+  }
+  renderThreads();
+}
+
+function formatThreadMeta(thread) {
+  const pieces = [];
+  const staff = findStaffById(thread.staffId);
+  if (staff) {
+    pieces.push(staff.displayName);
+  }
+  if (thread.updatedAt) {
+    pieces.push(formatRelativeTime(thread.updatedAt));
+  } else if (thread.createdAt) {
+    pieces.push(formatRelativeTime(thread.createdAt));
+  }
+  return pieces.join(' · ') || '履歴なし';
+}
+
+function findStaffById(staffId) {
+  if (!staffId) return null;
+  for (const org of organizationHierarchy) {
+    for (const office of org.offices || []) {
+      const staff = (office.staff || []).find((member) => member.id === staffId);
+      if (staff) return staff;
+    }
+  }
+  return null;
+}
+
+function formatRelativeTime(isoString) {
+  if (!isoString) return '';
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const diffMs = date.getTime() - Date.now();
+  const thresholds = [
+    { unit: 'day', ms: 86400000 },
+    { unit: 'hour', ms: 3600000 },
+    { unit: 'minute', ms: 60000 },
+  ];
+
+  const rtf = new Intl.RelativeTimeFormat('ja-JP', { numeric: 'auto' });
+  for (const { unit, ms } of thresholds) {
+    const value = Math.round(diffMs / ms);
+    if (Math.abs(value) >= 1) {
+      return rtf.format(value, unit);
+    }
+  }
+
+  return 'たった今';
+}
+
+async function onSessionOfficeChange(event) {
+  const officeId = event.target.value || null;
+  await setSession({ officeId });
+}
+
+async function onSessionStaffChange(event) {
+  const staffId = event.target.value || null;
+  await setSession({ staffId });
+}
+
+async function onStartThread() {
+  if (!sessionState.officeId || !sessionState.staffId) {
+    alert('先に事業所とスタッフを選択してください。');
+    return;
+  }
+
+  startThreadBtn.disabled = true;
+  startThreadBtn.textContent = '作成中...';
+
+  try {
+    const res = await fetch('/api/threads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session: {
+          officeId: sessionState.officeId,
+          staffId: sessionState.staffId,
+        },
+        query: chatInput.value.trim(),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'スレッドの作成に失敗しました');
+    }
+    organizationHierarchy = data.hierarchy || organizationHierarchy;
+    applySessionUpdate(data.session, data.threads);
+    renderSessionSelectors();
+  } catch (error) {
+    console.error(error);
+    alert(error.message);
+  } finally {
+    startThreadBtn.disabled = false;
+    startThreadBtn.textContent = '新しいスレッドを開始';
+  }
+}
+
+async function onThreadListClick(event) {
+  const card = event.target.closest('[data-thread-id]');
+  if (!card) return;
+  const threadId = card.dataset.threadId;
+  if (!threadId || threadId === sessionState.threadId) return;
+  await setSession({ threadId });
+}
+
+async function setSession(partial) {
+  try {
+    const res = await fetch('/api/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(partial),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'セッションの更新に失敗しました');
+    }
+    organizationHierarchy = data.hierarchy || organizationHierarchy;
+    applySessionUpdate(data.session, data.threads);
+    renderSessionSelectors();
+    if (Object.prototype.hasOwnProperty.call(partial, 'officeId')) {
+      loadStores({ force: true });
+    }
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 async function fetchState() {
@@ -149,6 +500,12 @@ async function onChatSubmit(event) {
       body: JSON.stringify({
         query: text,
         history: conversationHistory.slice(0, -1),
+        session: {
+          organizationId: sessionState.organizationId,
+          officeId: sessionState.officeId,
+          staffId: sessionState.staffId,
+          threadId: sessionState.threadId,
+        },
       }),
     });
     const data = await res.json();
@@ -161,6 +518,15 @@ async function onChatSubmit(event) {
     updateMessage(loadingMessage, answer, data.context);
     conversationHistory.push({ role: 'model', content: answer });
     setStatus('ジェミニ準備完了');
+
+    if (data.session || data.threads) {
+      applySessionUpdate(data.session || sessionState, data.threads);
+      renderSessionSelectors();
+    }
+
+    if (data.thread) {
+      upsertThread(data.thread);
+    }
   } catch (error) {
     console.error(error);
     updateMessage(loadingMessage, `エラー: ${error.message}`);
@@ -230,6 +596,10 @@ async function loadStores(options = {}) {
       throw new Error(data.error || 'ファイルストアの取得に失敗しました');
     }
     storeCache = Array.isArray(data.stores) ? data.stores : [];
+    if (data.session) {
+      applySessionUpdate(data.session, data.threads);
+      renderSessionSelectors();
+    }
     renderStores();
     updateStoreSelect();
   } catch (error) {
@@ -245,24 +615,35 @@ async function loadStores(options = {}) {
 
 function renderDocuments(documents) {
   documentList.innerHTML = '';
-  if (!documents || !documents.length) {
-    documentList.innerHTML = '<p class="empty-hint">カスタムノートはまだありません。</p>';
-    return;
-  }
+  const list = documents && documents.length ? documents : SAMPLE_NOTES;
 
-  for (const doc of documents) {
+  for (const doc of list) {
     const card = document.createElement('article');
     card.className = 'document-card';
+    if (!documents || !documents.length) {
+      card.dataset.sample = 'true';
+    }
     const title = document.createElement('h4');
+    title.className = 'document-card__title';
     title.textContent = doc.title;
     const meta = document.createElement('p');
-    meta.textContent = `${doc.source === 'user' ? 'カスタム' : '原稿'} / 約${doc.tokens}トークン`;
+    meta.className = 'document-card__meta';
+    const metaLabel = doc.source === 'user' ? 'カスタム' : doc.source === 'transcript' ? '原稿' : 'サンプル';
+    meta.textContent = `${metaLabel} / 約${doc.tokens || Math.ceil((doc.preview || '').length / 3)}トークン`;
     const preview = document.createElement('p');
+    preview.className = 'document-card__preview';
     preview.textContent = doc.preview;
     card.appendChild(title);
     card.appendChild(meta);
     card.appendChild(preview);
     documentList.appendChild(card);
+  }
+
+  if (!documents || !documents.length) {
+    const hint = document.createElement('p');
+    hint.className = 'empty-hint';
+    hint.textContent = 'メモを追加すると、ここに保存済みの内容が表示されます。';
+    documentList.appendChild(hint);
   }
 }
 
