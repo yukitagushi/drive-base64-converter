@@ -7,6 +7,8 @@ A monochrome single-page AI knowledge system that integrates Gemini File Search 
 Create an `.env` file (or configure Vercel project variables) with the following keys:
 
 - `GEMINI_API_KEY` – Gemini API key (falls back to `GOOGLE_API_KEY` if omitted).
+- `GEMINI_PROJECT_ID` – Google Cloud project ID/number that owns the Gemini File Search resources (accepts `GOOGLE_PROJECT_ID`/`GOOGLE_CLOUD_PROJECT` as fallbacks).
+- `GEMINI_LOCATION` – Gemini File Search location (defaults to `global` when omitted).
 - `GOOGLE_API_KEY` – Legacy alias for the Gemini key.
 - `SUPABASE_URL` – Supabase project URL (https://<project-ref>.supabase.co).
 - `SUPABASE_ANON_KEY` – Supabase anon/public API key (server-side fallback).

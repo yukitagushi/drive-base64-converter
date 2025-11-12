@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { randomUUID } from 'crypto';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
 import {
   buildSessionPayload,
@@ -7,7 +6,7 @@ import {
   resolveStaffForRequest,
 } from '../lib/api-auth';
 import { getSupabaseClientWithToken } from '../lib/supabaseClient';
-import { createFileStoreIfNeeded } from '../lib/gemini';
+import { GeminiApiError, createFileStore, sanitizeStoreId } from '../lib/gemini';
 
 function firstValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) {
@@ -29,17 +28,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     res.setHeader('Allow', 'GET, POST');
-    res.status(405).json({ error: 'Method Not Allowed' });
+    res.status(405).json({ error: 'Method Not Allowed', status: 405 });
   } catch (error: any) {
     console.error('Error in /api/file-stores:', error);
-    res.status(500).json({ error: error?.message || 'Internal Server Error' });
+    if (handleKnownError(res, error)) {
+      return;
+    }
+    res.status(500).json({ error: error?.message || 'Internal Server Error', status: 500 });
   }
 }
 
 async function handleGet(req: VercelRequest, res: VercelResponse) {
   const token = getSupabaseBearerToken(req);
   if (!token) {
-    res.status(401).json({ error: '認証が必要です。' });
+    res.status(401).json({ error: '認証が必要です。', status: 401 });
     return;
   }
 
@@ -47,7 +49,7 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
   const admin = getSupabaseAdmin();
   const staff = await resolveStaffForRequest(admin, req);
   if (!staff) {
-    res.status(403).json({ error: 'スタッフ情報が見つかりません。' });
+    res.status(403).json({ error: 'スタッフ情報が見つかりません。', status: 403 });
     return;
   }
 
@@ -116,7 +118,7 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
 async function handlePost(req: VercelRequest, res: VercelResponse) {
   const token = getSupabaseBearerToken(req);
   if (!token) {
-    res.status(401).json({ error: '認証が必要です。' });
+    res.status(401).json({ error: '認証が必要です。', status: 401 });
     return;
   }
 
@@ -130,19 +132,19 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
       body = req.body;
     }
   } catch (error: any) {
-    res.status(400).json({ error: 'JSON 形式で送信してください。' });
+    res.status(400).json({ error: 'JSON 形式で送信してください。', status: 400 });
     return;
   }
   const staff = await resolveStaffForRequest(admin, req);
 
   if (!staff?.officeId) {
-    res.status(403).json({ error: '事業所に紐づいたスタッフ情報が見つかりません。' });
+    res.status(403).json({ error: '事業所に紐づいたスタッフ情報が見つかりません。', status: 403 });
     return;
   }
 
   const displayName = String(body.displayName || '').trim();
   if (!displayName) {
-    res.status(400).json({ error: 'displayName は必須です。' });
+    res.status(400).json({ error: 'displayName は必須です。', status: 400 });
     return;
   }
 
@@ -150,16 +152,16 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
 
   const requestedStoreId =
     typeof body.geminiStoreId === 'string' && body.geminiStoreId.trim()
-      ? body.geminiStoreId.trim()
-      : `store-${randomUUID()}`;
+      ? sanitizeStoreId(body.geminiStoreId.trim(), displayName)
+      : sanitizeStoreId(displayName);
 
-  const store = await createFileStoreIfNeeded(requestedStoreId, displayName);
+  const store = await createFileStore(requestedStoreId, displayName);
 
   const insertPayload = {
     id: body.id && typeof body.id === 'string' ? body.id : undefined,
     office_id: staff.officeId,
     organization_id: staff.organizationId,
-    gemini_store_name: store.storeName || `fileStores/${requestedStoreId}`,
+    gemini_store_name: store.storeName,
     display_name: displayName,
     description,
     created_by: staff.id,
@@ -173,6 +175,10 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
 
   if (error) {
     console.error('Supabase store insert error:', error.message);
+    if (error.code === '23505') {
+      res.status(409).json({ error: '同じストアがすでに存在します。', status: 409 });
+      return;
+    }
     throw new Error(error.message);
   }
 
@@ -190,4 +196,17 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
       sizeBytes: 0,
     },
   });
+}
+
+function handleKnownError(res: VercelResponse, error: any): boolean {
+  if (error instanceof GeminiApiError) {
+    const status = error.status ?? 500;
+    res.status(status).json({
+      error: error.message,
+      status,
+      debugId: error.debugId ?? null,
+    });
+    return true;
+  }
+  return false;
 }

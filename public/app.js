@@ -83,6 +83,15 @@ let toastContainer;
 
 let publicSupabaseConfig = null;
 
+class HttpError extends Error {
+  constructor(message, options = {}) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = options.status;
+    this.body = options.body;
+  }
+}
+
 function cacheDomElements() {
   appShell = document.querySelector('.app-shell');
   landingScreen = document.getElementById('landing-screen');
@@ -317,6 +326,18 @@ function ensureAuthenticated(options = {}) {
   return false;
 }
 
+function formatHttpError(error, fallbackMessage) {
+  if (!error) {
+    return fallbackMessage;
+  }
+  const message = error?.message || fallbackMessage;
+  const status = error?.status;
+  if (status) {
+    return `(${status}) ${message}`;
+  }
+  return message;
+}
+
 async function safeFetch(url, options = {}) {
   const mergedHeaders = { ...(options?.headers || {}) };
   const requestBody = options?.body;
@@ -340,7 +361,7 @@ async function safeFetch(url, options = {}) {
       typeof responseBody === 'string'
         ? responseBody
         : responseBody?.error || (responseBody ? JSON.stringify(responseBody) : 'リクエストに失敗しました');
-    throw new Error(message);
+    throw new HttpError(message, { status: response.status, body: responseBody });
   }
 
   return responseBody;
@@ -1980,7 +2001,7 @@ async function onCreateStore(event) {
     await loadStores({ silent: true });
   } catch (error) {
     console.error(error);
-    storeFeedback.textContent = error.message;
+    storeFeedback.textContent = formatHttpError(error, 'ストアの作成に失敗しました。');
   } finally {
     submitStoreBtn.disabled = false;
     submitStoreBtn.textContent = '作成';
@@ -2045,7 +2066,7 @@ async function onUploadFile(event) {
     }
   } catch (error) {
     console.error(error);
-    uploadFeedback.textContent = error.message;
+    uploadFeedback.textContent = formatHttpError(error, 'ファイルのアップロードに失敗しました。');
   } finally {
     submitUploadBtn.disabled = false;
     submitUploadBtn.textContent = 'アップロード';

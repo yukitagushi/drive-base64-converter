@@ -5,7 +5,7 @@ import {
   resolveStaffForRequest,
 } from '../lib/api-auth';
 import { getSupabaseClientWithToken } from '../lib/supabaseClient';
-import { uploadFileToStore } from '../lib/gemini';
+import { GeminiApiError, uploadFileToStore } from '../lib/gemini';
 
 function firstValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) {
@@ -38,17 +38,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     res.setHeader('Allow', 'GET, POST');
-    res.status(405).json({ error: 'Method Not Allowed' });
+    res.status(405).json({ error: 'Method Not Allowed', status: 405 });
   } catch (error: any) {
     console.error('Error in /api/documents:', error);
-    res.status(500).json({ error: error?.message || 'Internal Server Error' });
+    if (handleKnownError(res, error)) {
+      return;
+    }
+    res.status(500).json({ error: error?.message || 'Internal Server Error', status: 500 });
   }
 }
 
 async function handleGet(req: VercelRequest, res: VercelResponse) {
   const token = getSupabaseBearerToken(req);
   if (!token) {
-    res.status(401).json({ error: '認証が必要です。' });
+    res.status(401).json({ error: '認証が必要です。', status: 401 });
     return;
   }
 
@@ -56,7 +59,7 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
   const admin = getSupabaseAdmin();
   const staff = await resolveStaffForRequest(admin, req);
   if (!staff) {
-    res.status(403).json({ error: 'スタッフ情報が見つかりません。' });
+    res.status(403).json({ error: 'スタッフ情報が見つかりません。', status: 403 });
     return;
   }
 
@@ -64,7 +67,7 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
   const fileStoreId = firstValue(query.fileStoreId);
 
   if (!fileStoreId) {
-    res.status(400).json({ error: 'fileStoreId は必須です。' });
+    res.status(400).json({ error: 'fileStoreId は必須です。', status: 400 });
     return;
   }
 
@@ -81,10 +84,10 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
   if (!storeRow) {
     const access = await classifyStoreAccess(admin, fileStoreId, staff.officeId || null);
     if (access === 'forbidden') {
-      res.status(403).json({ error: 'このストアにはアクセスできません。' });
+      res.status(403).json({ error: 'このストアにはアクセスできません。', status: 403 });
       return;
     }
-    res.status(404).json({ error: '指定したストアが見つかりません。' });
+    res.status(404).json({ error: '指定したストアが見つかりません。', status: 404 });
     return;
   }
 
@@ -116,7 +119,7 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
 async function handlePost(req: VercelRequest, res: VercelResponse) {
   const token = getSupabaseBearerToken(req);
   if (!token) {
-    res.status(401).json({ error: '認証が必要です。' });
+    res.status(401).json({ error: '認証が必要です。', status: 401 });
     return;
   }
 
@@ -124,23 +127,31 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
   const admin = getSupabaseAdmin();
   const staff = await resolveStaffForRequest(admin, req);
   if (!staff?.officeId) {
-    res.status(403).json({ error: 'スタッフ情報が見つかりません。' });
+    res.status(403).json({ error: 'スタッフ情報が見つかりません。', status: 403 });
     return;
   }
 
-  const { fields, files } = await parseMultipartForm(req);
+  let parsed: MultipartResult;
+  try {
+    parsed = await parseMultipartForm(req);
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'multipart/form-data でファイルを送信してください。', status: 400 });
+    return;
+  }
+
+  const { fields, files } = parsed;
   const fileStoreId = fields.fileStoreId || fields.file_store_id;
   const memo = fields.memo || fields.description || '';
   const displayNameField = fields.displayName || fields.filename || '';
 
   if (!fileStoreId) {
-    res.status(400).json({ error: 'fileStoreId は必須です。' });
+    res.status(400).json({ error: 'fileStoreId は必須です。', status: 400 });
     return;
   }
 
   const fileEntry = files.file || files.document || Object.values(files)[0];
   if (!fileEntry) {
-    res.status(400).json({ error: 'ファイルが選択されていません。' });
+    res.status(400).json({ error: 'ファイルを選択してください。', status: 400 });
     return;
   }
 
@@ -157,15 +168,15 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
   if (!storeRow) {
     const access = await classifyStoreAccess(admin, fileStoreId, staff.officeId || null);
     if (access === 'forbidden') {
-      res.status(403).json({ error: 'このストアにはアクセスできません。' });
+      res.status(403).json({ error: 'このストアにはアクセスできません。', status: 403 });
       return;
     }
-    res.status(404).json({ error: '指定したストアが見つかりません。' });
+    res.status(404).json({ error: '指定したストアが見つかりません。', status: 404 });
     return;
   }
 
   if (storeRow.office_id !== staff.officeId) {
-    res.status(403).json({ error: 'このストアにはアクセスできません。' });
+    res.status(403).json({ error: 'このストアにはアクセスできません。', status: 403 });
     return;
   }
 
@@ -242,7 +253,6 @@ async function parseMultipartForm(req: VercelRequest): Promise<MultipartResult> 
   position += boundary.length;
 
   while (position < bodyBuffer.length) {
-    // Skip CRLF after boundary
     if (bodyBuffer[position] === 13 && bodyBuffer[position + 1] === 10) {
       position += 2;
     }
@@ -266,7 +276,6 @@ async function parseMultipartForm(req: VercelRequest): Promise<MultipartResult> 
     }
 
     let partBuffer = bodyBuffer.slice(position, partEnd);
-    // Remove trailing CRLF
     if (partBuffer.length >= 2 && partBuffer[partBuffer.length - 2] === 13 && partBuffer[partBuffer.length - 1] === 10) {
       partBuffer = partBuffer.slice(0, -2);
     }
@@ -369,4 +378,17 @@ async function classifyStoreAccess(admin: any, fileStoreId: string, staffOfficeI
     console.error('store access lookup failed:', error?.message || error);
     return null;
   }
+}
+
+function handleKnownError(res: VercelResponse, error: any): boolean {
+  if (error instanceof GeminiApiError) {
+    const status = error.status ?? 500;
+    res.status(status).json({
+      error: error.message,
+      status,
+      debugId: error.debugId ?? null,
+    });
+    return true;
+  }
+  return false;
 }
