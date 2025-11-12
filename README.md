@@ -9,9 +9,13 @@ Create an `.env` file (or configure Vercel project variables) with the following
 - `GEMINI_API_KEY` – Gemini API key (falls back to `GOOGLE_API_KEY` if omitted).
 - `GOOGLE_API_KEY` – Legacy alias for the Gemini key.
 - `SUPABASE_URL` – Supabase project URL (https://<project-ref>.supabase.co).
-- `SUPABASE_ANON_KEY` – Supabase anon/public API key.
+- `SUPABASE_ANON_KEY` – Supabase anon/public API key (server-side fallback).
 - `SUPABASE_SERVICE_ROLE_KEY` – Supabase service-role key (used only on the server/API layer).
 - `SUPABASE_GOOGLE_REDIRECT_URL` – OAuth redirect destination (e.g. `https://your-domain.com/` or local `http://localhost:3000/`).
+- `NEXT_PUBLIC_SUPABASE_URL` – Same URL as above, but exposed to the browser for the static frontend.
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` – Browser-facing anon key used by the Gemini Lounge UI.
+
+> **Note:** Because the frontend is a static `public/` bundle, browser code cannot read `process.env.*`. The `/api/public-env` endpoint surfaces the public Supabase credentials at runtime, so both `SUPABASE_*` (server) and `NEXT_PUBLIC_SUPABASE_*` (browser) variables should be configured in Vercel.
 
 ## Demo login
 
@@ -26,7 +30,7 @@ When running against Supabase, create an auth user with the same credentials and
 
 1. **Enable Google provider** – In Supabase Console go to **Authentication → Providers**, enable Google, and set the OAuth consent screen credentials in Google Cloud. Configure the Google redirect URI to `https://<project-ref>.supabase.co/auth/v1/callback`.
 2. **Configure redirect URLs** – In **Authentication → URL Configuration**, add your production domain, preview URLs, and `http://localhost:3000` to the `Site URL` and `Redirect URLs` lists.
-3. **Expose the anon key to the client** – Ensure `SUPABASE_URL` and `SUPABASE_ANON_KEY` are available to the frontend (Vercel project environment variables). The Google login button consumes these values to launch `signInWithOAuth` directly from the browser.
+3. **Expose the anon key to the client** – Configure both `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in Vercel. The app reads them via `/api/public-env` so the static HTML/JS bundle can initialise Supabase at runtime.
 4. **Server credentials** – Keep `SUPABASE_SERVICE_ROLE_KEY` restricted to server-side execution only (API routes / local server) and never expose it in the browser.
 
 After deploying, confirm that clicking **Google でログイン** navigates to `/auth/v1/authorize`, and that returning to the app yields a valid `supabase.auth.getUser()` response.

@@ -81,6 +81,8 @@ let googleHint;
 
 let toastContainer;
 
+let publicSupabaseConfig = null;
+
 function cacheDomElements() {
   appShell = document.querySelector('.app-shell');
   landingScreen = document.getElementById('landing-screen');
@@ -344,6 +346,51 @@ async function safeFetch(url, options = {}) {
   return responseBody;
 }
 
+function getCachedPublicSupabaseConfig() {
+  return publicSupabaseConfig;
+}
+
+async function fetchPublicSupabaseConfig(options = {}) {
+  if (publicSupabaseConfig && !options.force) {
+    return publicSupabaseConfig;
+  }
+
+  try {
+    const data = await safeFetch('/api/public-env');
+    publicSupabaseConfig = {
+      url: data?.supabaseUrl || null,
+      anonKey: data?.anonKey || null,
+    };
+  } catch (error) {
+    console.warn('Failed to load public Supabase environment:', error);
+    publicSupabaseConfig = { url: null, anonKey: null };
+  }
+
+  return publicSupabaseConfig;
+}
+
+async function ensureSupabaseConfigFromPublicEnv(options = {}) {
+  const env = await fetchPublicSupabaseConfig(options);
+  if (!env?.url || !env?.anonKey) {
+    return false;
+  }
+
+  const needsUpdate =
+    !authState.supabase ||
+    authState.supabase.url !== env.url ||
+    authState.supabase.anonKey !== env.anonKey;
+
+  if (needsUpdate) {
+    authState.supabase = { url: env.url, anonKey: env.anonKey };
+  }
+
+  if (!hasSupabaseClient() || needsUpdate) {
+    updateSupabaseClientFromState();
+  }
+
+  return true;
+}
+
 function updateSupabaseClientFromState() {
   const config = authState.supabase;
   const signature = config?.url && config?.anonKey ? `${config.url}::${config.anonKey}` : null;
@@ -520,6 +567,7 @@ if (document.readyState === 'loading') {
 
 async function init() {
   await waitForDom();
+  await ensureSupabaseConfigFromPublicEnv();
   await loadAuth();
   await syncSupabaseSessionFromClient({ initial: true });
   if (authState.authenticated) {
@@ -641,13 +689,21 @@ async function loadAuth() {
 function applyAuthState(next) {
   if (!next || typeof next !== 'object') return;
   const wasAuthenticated = authState.authenticated;
+  const previousSupabase = authState.supabase;
   authState.authenticated = Boolean(next.authenticated);
   authState.user = next.user || null;
   authState.staff = next.staff || null;
   authState.providers = next.providers || { google: { enabled: false, url: null } };
   authState.supabaseConfigured = Boolean(next.supabaseConfigured);
   authState.authConfigured = Boolean(next.authConfigured);
-  authState.supabase = next.supabase || null;
+  const publicEnv = getCachedPublicSupabaseConfig();
+  const resolvedSupabase =
+    (next.supabase && next.supabase.url && next.supabase.anonKey ? next.supabase : null) ||
+    (publicEnv && publicEnv.url && publicEnv.anonKey
+      ? { url: publicEnv.url, anonKey: publicEnv.anonKey }
+      : null) ||
+    (previousSupabase && previousSupabase.url && previousSupabase.anonKey ? previousSupabase : null);
+  authState.supabase = resolvedSupabase;
   updateSupabaseClientFromState();
   updateAuthUi();
   if (wasAuthenticated && !authState.authenticated) {
