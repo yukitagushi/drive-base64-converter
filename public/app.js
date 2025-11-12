@@ -14,6 +14,7 @@ const loginBackButton = document.getElementById('login-back');
 const messageList = document.getElementById('message-list');
 const chatForm = document.getElementById('chat-form');
 const chatInput = document.getElementById('chat-input');
+const chatSubmitButton = document.querySelector('#chat-form button[type="submit"]');
 const statusIndicator = document.getElementById('status-indicator');
 const template = document.getElementById('message-template');
 
@@ -132,6 +133,21 @@ const SAMPLE_NOTES = [
     tokens: 58,
   },
 ];
+
+function ensureAuthenticated(options = {}) {
+  if (authState.authenticated) {
+    return true;
+  }
+
+  const { message, toast = true, focusLogin = true } = options || {};
+  if (toast !== false) {
+    showToast(message || 'ログインすると操作できます。');
+  }
+  if (focusLogin !== false) {
+    showLoginScreen();
+  }
+  return false;
+}
 
 async function safeFetch(url, options = {}) {
   const mergedHeaders = { ...(options?.headers || {}) };
@@ -344,7 +360,7 @@ async function init() {
   documentForm.addEventListener('submit', onDocumentSubmit);
   refreshStoresBtn.addEventListener('click', () => loadStores({ force: true }));
 
-  openStoreBtn.addEventListener('click', () => openDialog(storeDialog));
+  openStoreBtn.addEventListener('click', handleOpenStoreDialog);
   openUploadBtn.addEventListener('click', handleOpenUploadDialog);
 
   sessionOfficeSelect.addEventListener('change', onSessionOfficeChange);
@@ -456,24 +472,21 @@ function updateAuthUi() {
     loginVisible = false;
   }
   const showLogin = !isAuthed && loginVisible;
-  const showLanding = !isAuthed && !loginVisible;
+  const showApp = !showLogin;
 
   if (document.body) {
-    document.body.classList.toggle('show-app', isAuthed);
+    document.body.classList.toggle('show-app', showApp);
     document.body.classList.toggle('show-login', showLogin);
-    document.body.classList.toggle('show-landing', showLanding);
+    document.body.classList.toggle('is-guest', !isAuthed);
+    document.body.classList.remove('show-landing');
   }
   if (appShell) {
-    appShell.hidden = !isAuthed;
+    appShell.hidden = !showApp;
   }
   if (landingScreen) {
-    landingScreen.hidden = !showLanding;
-    landingScreen.setAttribute('aria-hidden', showLanding ? 'false' : 'true');
-    if (showLanding) {
-      landingScreen.removeAttribute('inert');
-    } else {
-      landingScreen.setAttribute('inert', '');
-    }
+    landingScreen.hidden = true;
+    landingScreen.setAttribute('aria-hidden', 'true');
+    landingScreen.setAttribute('inert', '');
   }
   if (loginScreen) {
     loginScreen.hidden = !showLogin;
@@ -485,7 +498,9 @@ function updateAuthUi() {
     }
   }
   if (authTrigger) {
-    authTrigger.classList.toggle('is-hidden', !showLanding);
+    authTrigger.hidden = isAuthed;
+    authTrigger.disabled = showLogin;
+    authTrigger.setAttribute('aria-hidden', isAuthed ? 'true' : 'false');
   }
   if (authUserContainer) {
     authUserContainer.hidden = !isAuthed;
@@ -527,6 +542,77 @@ function updateAuthUi() {
     } else {
       googleHint.textContent = 'Google OAuth を設定するとここからログインできます。';
     }
+  }
+
+  applyGuestUi(!isAuthed);
+}
+
+function applyGuestUi(isGuest) {
+  const toggleInteractive = (element, disabled) => {
+    if (!element) return;
+    if (disabled) {
+      if (!element.dataset.guestDisabled) {
+        element.dataset.guestDisabled = element.disabled ? 'persist' : 'temp';
+      }
+      element.disabled = true;
+      element.classList?.add('is-disabled');
+    } else if (element.dataset.guestDisabled) {
+      const persist = element.dataset.guestDisabled === 'persist';
+      delete element.dataset.guestDisabled;
+      if (!persist) {
+        element.disabled = false;
+      }
+      if (!element.disabled) {
+        element.classList?.remove('is-disabled');
+      }
+    } else if (!element.disabled) {
+      element.classList?.remove('is-disabled');
+    }
+  };
+
+  toggleInteractive(openStoreBtn, isGuest);
+  toggleInteractive(openUploadBtn, isGuest);
+  toggleInteractive(refreshStoresBtn, isGuest);
+  toggleInteractive(startThreadBtn, isGuest);
+
+  if (chatInput) {
+    chatInput.disabled = isGuest;
+    chatInput.placeholder = isGuest ? 'ログインすると質問できます。' : 'Gemini に質問する...';
+  }
+
+  if (chatSubmitButton) {
+    if (isGuest) {
+      if (!chatSubmitButton.dataset.guestDisabled) {
+        chatSubmitButton.dataset.guestDisabled = chatSubmitButton.disabled ? 'persist' : 'temp';
+      }
+      chatSubmitButton.disabled = true;
+    } else if (chatSubmitButton.dataset.guestDisabled) {
+      const persist = chatSubmitButton.dataset.guestDisabled === 'persist';
+      delete chatSubmitButton.dataset.guestDisabled;
+      if (!persist && !isSending) {
+        chatSubmitButton.disabled = false;
+      }
+    } else if (!isSending && !authState.authenticated) {
+      chatSubmitButton.disabled = true;
+    }
+  }
+
+  if (sessionOfficeSelect) {
+    sessionOfficeSelect.disabled = isGuest;
+  }
+  if (sessionStaffSelect) {
+    sessionStaffSelect.disabled = isGuest;
+  }
+
+  if (!isGuest && chatSubmitButton && !isSending && !chatSubmitButton.disabled) {
+    chatSubmitButton.classList?.remove('is-disabled');
+  }
+
+  if (storeFeedback && isGuest) {
+    storeFeedback.textContent = '';
+  }
+  if (uploadFeedback && isGuest) {
+    uploadFeedback.textContent = '';
   }
 }
 
@@ -1233,6 +1319,9 @@ async function onSessionStaffChange(event) {
 }
 
 async function onStartThread() {
+  if (!ensureAuthenticated({ message: 'スレッドを管理するにはログインしてください。' })) {
+    return;
+  }
   if (!sessionState.officeId || !sessionState.staffId) {
     alert('先に事業所とスタッフを選択してください。');
     return;
@@ -1325,11 +1414,18 @@ async function fetchState() {
 
 async function onChatSubmit(event) {
   event.preventDefault();
+  if (!authState.authenticated) {
+    ensureAuthenticated({ message: 'チャットを利用するにはログインしてください。' });
+    return;
+  }
   if (isSending) return;
 
   const text = chatInput.value.trim();
   if (!text) return;
 
+  if (chatSubmitButton) {
+    chatSubmitButton.disabled = true;
+  }
   chatInput.value = '';
   chatInput.style.height = 'auto';
 
@@ -1381,12 +1477,18 @@ async function onChatSubmit(event) {
     setStatus('エラーが発生しました');
   } finally {
     isSending = false;
+    if (chatSubmitButton) {
+      chatSubmitButton.disabled = !authState.authenticated;
+    }
     scrollToBottom();
   }
 }
 
 async function onDocumentSubmit(event) {
   event.preventDefault();
+  if (!ensureAuthenticated({ message: 'カスタムノートを保存するにはログインしてください。' })) {
+    return;
+  }
   documentError.textContent = '';
 
   const title = docTitle.value.trim();
@@ -1564,6 +1666,9 @@ function renderStores() {
 
 async function onCreateStore(event) {
   event.preventDefault();
+  if (!ensureAuthenticated({ message: 'ストアを作成するにはログインしてください。' })) {
+    return;
+  }
   storeFeedback.textContent = '';
 
   const name = storeNameInput.value.trim();
@@ -1596,6 +1701,9 @@ async function onCreateStore(event) {
 
 async function onUploadFile(event) {
   event.preventDefault();
+  if (!ensureAuthenticated({ message: 'ファイルをアップロードするにはログインしてください。' })) {
+    return;
+  }
   uploadFeedback.textContent = '';
 
   const file = uploadFileInput.files?.[0];
@@ -1662,7 +1770,22 @@ function updateUploadButtonState() {
   submitUploadBtn.disabled = !(hasFile && hasStore);
 }
 
+function handleOpenStoreDialog() {
+  if (!ensureAuthenticated({ message: 'ストアを作成するにはログインしてください。' })) {
+    return;
+  }
+
+  storeForm.reset();
+  storeFeedback.textContent = '';
+  submitStoreBtn.disabled = false;
+  openDialog(storeDialog);
+}
+
 function handleOpenUploadDialog() {
+  if (!ensureAuthenticated({ message: 'ファイルをアップロードするにはログインしてください。' })) {
+    return;
+  }
+
   uploadForm.reset();
   uploadFeedback.textContent = '';
   uploadSummary.textContent = 'ファイルを選択すると詳細が表示されます。';

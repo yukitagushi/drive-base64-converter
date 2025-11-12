@@ -12,6 +12,15 @@ Create an `.env` file (or configure Vercel project variables) with the following
 - `SUPABASE_SERVICE_ROLE_KEY` – Supabase service-role key (used only on the server/API layer).
 - `SUPABASE_GOOGLE_REDIRECT_URL` – OAuth redirect destination (e.g. `https://your-domain.com/` or local `http://localhost:3000/`).
 
+## Demo login
+
+The local fallback (when Supabase credentials are omitted) ships with a demo account:
+
+- **Email:** `30.sc350@gmail.com`
+- **Password:** `12341234`
+
+When running against Supabase, create an auth user with the same credentials and execute `supabase/seed.sql` so the corresponding staff profile is provisioned automatically.
+
 ## Supabase Google OAuth setup
 
 1. **Enable Google provider** – In Supabase Console go to **Authentication → Providers**, enable Google, and set the OAuth consent screen credentials in Google Cloud. Configure the Google redirect URI to `https://<project-ref>.supabase.co/auth/v1/callback`.

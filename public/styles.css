@@ -25,14 +25,12 @@ body {
   background: var(--bg);
 }
 
-body.show-landing,
 body.show-login {
   align-items: center;
   display: flex;
   justify-content: center;
 }
 
-body.show-landing .app-shell,
 body.show-login .app-shell {
   display: none;
 }
@@ -73,103 +71,20 @@ body.show-login .app-shell {
   background: var(--danger);
 }
 
-body.show-app #landing-screen,
 body.show-app #login-screen {
   display: none;
 }
 
-#landing-screen,
 #login-screen {
   display: none;
   position: relative;
   width: 100%;
   min-height: 100vh;
   padding: clamp(32px, 8vw, 80px);
-}
-
-#landing-screen {
-  background: linear-gradient(180deg, #ffffff 0%, #f0f0f0 100%);
-  flex-direction: column;
-  gap: clamp(32px, 6vw, 64px);
-  justify-content: center;
-  align-items: center;
-  text-align: center;
-}
-
-.landing-hero {
-  display: grid;
-  gap: clamp(16px, 3vw, 32px);
-  max-width: min(720px, 90vw);
-  align-items: center;
-  justify-items: center;
-}
-
-.landing-brand {
-  display: flex;
-  align-items: center;
-  gap: clamp(12px, 2vw, 24px);
-}
-
-.landing-mark {
-  display: grid;
-  place-items: center;
-  width: clamp(56px, 7vw, 72px);
-  height: clamp(56px, 7vw, 72px);
-  border-radius: 24px;
-  background: #111111;
-  color: #ffffff;
-  font-size: clamp(24px, 3vw, 28px);
-  font-weight: 600;
-  letter-spacing: 0.05em;
-}
-
-.landing-text {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  text-align: left;
-}
-
-.landing-label {
-  margin: 0;
-  font-size: 0.95rem;
-  letter-spacing: 0.32em;
-  text-transform: uppercase;
-  color: rgba(17, 17, 17, 0.6);
-}
-
-.landing-title {
-  margin: 0;
-  font-size: clamp(28px, 5vw, 48px);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-
-.landing-subtitle {
-  margin: 0;
-  color: var(--muted);
-  line-height: 1.8;
-  font-size: 1rem;
-}
-
-.landing-actions {
-  display: flex;
-  align-items: center;
-  gap: clamp(16px, 4vw, 32px);
-}
-
-.landing-footnote {
-  margin: 0;
-  color: rgba(17, 17, 17, 0.55);
-  font-size: 0.9rem;
-}
-
-#login-screen {
   background: linear-gradient(180deg, #ffffff 0%, #eaeaea 100%);
   overflow: hidden;
 }
 
-body.show-landing #landing-screen,
 body.show-login #login-screen {
   display: flex;
   align-items: center;
@@ -427,6 +342,11 @@ body.show-login #login-screen {
 
 .is-hidden {
   display: none !important;
+}
+
+.is-disabled {
+  pointer-events: none;
+  opacity: 0.55;
 }
 
 .auth-user {
@@ -863,6 +783,15 @@ body.show-login #login-screen {
   outline: none;
   border-color: var(--accent);
   background-color: #fff;
+}
+
+.field input:disabled,
+.field textarea:disabled,
+.field select:disabled {
+  background-color: var(--surface-muted);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 

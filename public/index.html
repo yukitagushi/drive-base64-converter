@@ -12,27 +12,7 @@
     />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body class="show-landing">
-    <div id="landing-screen" class="landing-screen" aria-labelledby="landing-title">
-      <header class="landing-hero">
-        <div class="landing-brand">
-          <span class="landing-mark">◎</span>
-          <div class="landing-text">
-            <p class="landing-label">Gemini Lounge</p>
-            <h1 id="landing-title" class="landing-title">ファイルサーチ対応 AI ナレッジ</h1>
-          </div>
-        </div>
-        <p class="landing-subtitle">
-          事業所向けに設計された Gemini ベースのサポート環境。アップロードした資料を検索しながら、
-          スタッフ同士でナレッジを共有できます。
-        </p>
-      </header>
-      <div class="landing-actions" role="group" aria-label="メイン操作">
-        <button id="auth-trigger" class="btn btn-solid btn-large" type="button">ログイン</button>
-        <button id="landing-request" class="btn btn-ghost" type="button">アカウント発行を申請</button>
-      </div>
-      <p class="landing-footnote">* ご契約済みの事業所のみログインできます。</p>
-    </div>
+  <body class="show-app is-guest">
 
     <div id="login-screen" class="login-screen">
       <div class="login-screen__scene" aria-hidden="true">
@@ -101,6 +81,7 @@
             <button id="open-store" class="btn btn-outline" type="button">ストアを作成</button>
           </div>
           <div class="auth-cluster">
+            <button id="auth-trigger" class="btn btn-outline" type="button">ログイン</button>
             <div id="auth-user" class="auth-user" hidden>
               <button
                 id="auth-user-button"

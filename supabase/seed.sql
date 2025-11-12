@@ -49,6 +49,18 @@ from auth.users
 where email = 'nakamura@example.com'
 on conflict (id) do update set office_id = excluded.office_id, display_name = excluded.display_name;
 
+insert into staff_profiles (id, user_id, office_id, email, display_name, role)
+select
+  'aaaa1111-bbbb-cccc-dddd-eeeeffff0004',
+  id,
+  'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+  email,
+  'デモスタッフ',
+  'member'
+from auth.users
+where email = '30.sc350@gmail.com'
+on conflict (id) do update set office_id = excluded.office_id, display_name = excluded.display_name;
+
 -- Seed a demo file store entry
 insert into file_stores (id, organization_id, office_id, gemini_store_name, display_name, created_by)
 values (
