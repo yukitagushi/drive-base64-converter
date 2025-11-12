@@ -2284,14 +2284,36 @@ async function onUploadFile(event) {
       throw new Error(data.error || 'アップロードに失敗しました');
     }
 
+    const uploadedItems = Array.isArray(data.items)
+      ? data.items.map((item) => normalizeFileRow(item)).filter((entry) => entry && entry.fileStoreId)
+      : [];
+
+    if (!uploadedItems.length) {
+      const fallback = normalizeFileRow(data.item || data.file);
+      if (fallback && fallback.fileStoreId) {
+        uploadedItems.push(fallback);
+      }
+    }
+
     closeDialog(uploadDialog);
-    showToast('ファイルをアップロードしました。');
+
+    const successNotes = Array.isArray(data.notes) && data.notes.length ? `\n${data.notes.join('\n')}` : '';
+    showToast(`ファイルをアップロードしました。${successNotes}`.trim());
+
     await loadStores({ silent: true });
 
-    const uploaded = normalizeFileRow(data.item || data.file);
-    if (uploaded && uploaded.fileStoreId) {
-      const existing = storeFilesCache.get(uploaded.fileStoreId) || [];
-      storeFilesCache.set(uploaded.fileStoreId, [uploaded, ...existing]);
+    if (uploadedItems.length) {
+      const grouped = new Map();
+      uploadedItems.forEach((item) => {
+        const existing = grouped.get(item.fileStoreId) || [];
+        existing.push(item);
+        grouped.set(item.fileStoreId, existing);
+      });
+
+      grouped.forEach((items, targetStoreId) => {
+        const existingList = storeFilesCache.get(targetStoreId) || [];
+        storeFilesCache.set(targetStoreId, [...items, ...existingList]);
+      });
     } else {
       storeFilesCache.delete(storeId);
     }

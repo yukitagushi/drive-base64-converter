@@ -1,15 +1,97 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { extname } from 'node:path';
+import JSZip from 'jszip';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
 import {
   getSupabaseBearerToken,
   resolveStaffForRequest,
 } from '../lib/api-auth';
 import { getSupabaseClientWithToken } from '../lib/supabaseClient';
-import { GeminiApiError, uploadFileToStore } from '../lib/gemini';
+import {
+  analyzeFileWithGemini,
+  GeminiApiError,
+  uploadFileToStore,
+  type GeminiFileUploadResult,
+  type GeminiMediaAnalysisResult,
+} from '../lib/gemini';
 import { ensureStorageBucket } from '../lib/storage';
 
 const DEFAULT_UPLOAD_BUCKET = 'gemini-upload-cache';
 const MAX_UPLOAD_BYTES = 60 * 1024 * 1024; // 60MB safety cap for server-side processing
+
+const ZIP_MIME_TYPES = new Set([
+  'application/zip',
+  'application/x-zip-compressed',
+  'multipart/x-zip',
+]);
+
+const TEXTUAL_EXTENSIONS = new Set([
+  'txt',
+  'md',
+  'markdown',
+  'json',
+  'csv',
+  'tsv',
+  'xml',
+  'html',
+  'htm',
+  'yaml',
+  'yml',
+  'js',
+  'ts',
+  'tsx',
+  'jsx',
+  'py',
+  'rb',
+  'go',
+  'java',
+  'c',
+  'cpp',
+  'cs',
+  'sql',
+  'log',
+]);
+
+const IMAGE_PREFIX = 'image/';
+const VIDEO_PREFIX = 'video/';
+
+function getExtension(filename?: string | null): string {
+  const ext = extname(String(filename || '')).toLowerCase();
+  return ext.startsWith('.') ? ext.slice(1) : ext;
+}
+
+function stripExtension(filename: string): string {
+  const index = filename.lastIndexOf('.');
+  if (index <= 0) {
+    return filename;
+  }
+  return filename.slice(0, index);
+}
+
+function isZipType(mimeType: string, extension: string): boolean {
+  return ZIP_MIME_TYPES.has(mimeType) || extension === 'zip';
+}
+
+function isImageMime(mimeType: string): boolean {
+  return mimeType.startsWith(IMAGE_PREFIX);
+}
+
+function isVideoMime(mimeType: string): boolean {
+  return mimeType.startsWith(VIDEO_PREFIX);
+}
+
+function isTextExtension(extension: string): boolean {
+  return TEXTUAL_EXTENSIONS.has(extension);
+}
+
+function appendDescription(base: string | null, extra: string | null): string | null {
+  const trimmedBase = base?.trim() || '';
+  const trimmedExtra = extra?.trim() || '';
+  if (trimmedBase && trimmedExtra) {
+    return `${trimmedBase}\n${trimmedExtra}`;
+  }
+  return trimmedBase || trimmedExtra || null;
+}
 
 function applyCors(req: VercelRequest, res: VercelResponse) {
   const origin = (req.headers.origin as string | undefined) || '';
@@ -41,6 +123,25 @@ interface MultipartFile {
 interface MultipartResult {
   fields: Record<string, string>;
   files: Record<string, MultipartFile>;
+}
+
+interface NormalizedFileRecord {
+  id: string;
+  fileStoreId: string;
+  geminiFileName: string;
+  displayName: string;
+  description: string | null;
+  sizeBytes: number | null;
+  mimeType: string | null;
+  uploadedBy: string | null;
+  uploadedAt: string | null;
+}
+
+interface UploadOutcome {
+  items: NormalizedFileRecord[];
+  gemini: GeminiFileUploadResult[];
+  analyses: GeminiMediaAnalysisResult[];
+  notes: string[];
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -159,11 +260,14 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
   ).toLowerCase();
 
   if (contentTypeHeader.includes('application/json')) {
-    await handleJsonUpload(req, res, {
+    const outcome = await handleJsonUpload(req, res, {
       supabase,
       admin,
       staff,
     });
+    if (outcome) {
+      res.status(201).json(outcome);
+    }
     return;
   }
 
@@ -208,61 +312,19 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
   fileStoreId = resolvedStore.storeId;
   const storeRow = resolvedStore.storeRow;
 
-  const uploadResult = await uploadFileToStore({
-    storeName: storeRow.gemini_store_name,
+  const outcome = await processUploadBuffer({
+    admin,
+    supabase,
+    staffId: staff.id,
+    storeRow,
     fileBuffer: fileEntry.data,
-    mimeType: fileEntry.contentType,
+    originalFilename: displayNameField || fileEntry.filename,
     displayName: displayNameField || fileEntry.filename,
-    description: memo,
+    mimeType: fileEntry.contentType || 'application/octet-stream',
+    memo,
   });
 
-  const insertPayload = {
-    file_store_id: storeRow.id,
-    gemini_file_name: uploadResult.geminiFileName,
-    display_name: uploadResult.displayName || fileEntry.filename,
-    description: memo || null,
-    size_bytes: uploadResult.sizeBytes || fileEntry.data.length,
-    mime_type: uploadResult.mimeType || fileEntry.contentType,
-    uploaded_by: staff.id,
-  };
-
-  const { data: adminInserted, error: adminInsertError } = await admin
-    .from('file_store_files')
-    .insert(insertPayload)
-    .select(
-      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at'
-    )
-    .single();
-
-  if (adminInsertError) {
-    console.error('Supabase file insert error:', adminInsertError.message);
-    throw new Error(adminInsertError.message);
-  }
-
-  const { data: readerRow } = await supabase
-    .from('file_store_files')
-    .select(
-      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at'
-    )
-    .eq('id', adminInserted.id)
-    .maybeSingle();
-
-  const data = readerRow || adminInserted;
-
-  res.status(201).json({
-    item: {
-      id: data.id,
-      fileStoreId: data.file_store_id,
-      geminiFileName: data.gemini_file_name,
-      displayName: data.display_name,
-      description: data.description,
-      sizeBytes: data.size_bytes,
-      mimeType: data.mime_type,
-      uploadedBy: data.uploaded_by,
-      uploadedAt: data.uploaded_at,
-    },
-    gemini: uploadResult,
-  });
+  res.status(201).json(outcome);
 }
 
 interface JsonUploadPayload {
@@ -292,13 +354,13 @@ async function handleJsonUpload(
     admin: ReturnType<typeof getSupabaseAdmin>;
     staff: Awaited<ReturnType<typeof resolveStaffForRequest>>;
   }
-) {
+): Promise<UploadOutcome | null> {
   const rawBuffer = await readRequestBody(req);
   const rawText = rawBuffer.toString('utf8').trim();
 
   if (!rawText) {
     respond(res, 400, { error: 'リクエスト本文が空です。' });
-    return;
+    return null;
   }
 
   let payload: JsonUploadPayload;
@@ -306,7 +368,7 @@ async function handleJsonUpload(
     payload = JSON.parse(rawText);
   } catch (error: any) {
     respond(res, 400, { error: 'JSON の解析に失敗しました。' });
-    return;
+    return null;
   }
 
   const fileStoreId = payload.fileStoreId || payload.file_store_id || '';
@@ -314,7 +376,7 @@ async function handleJsonUpload(
 
   if (!fileStoreId && !fileStoreName) {
     respond(res, 400, { error: 'fileStoreId または fileStoreName を指定してください。' });
-    return;
+    return null;
   }
 
   const storageBucket = payload.storageBucket || payload.bucket || DEFAULT_UPLOAD_BUCKET;
@@ -322,7 +384,7 @@ async function handleJsonUpload(
 
   if (!storageBucket || !storagePath) {
     respond(res, 400, { error: 'storageBucket と storagePath を指定してください。' });
-    return;
+    return null;
   }
 
   const resolvedStore = await resolveStoreForUpload({
@@ -335,7 +397,7 @@ async function handleJsonUpload(
   });
 
   if (!resolvedStore) {
-    return;
+    return null;
   }
 
   const storeRow = resolvedStore.storeRow;
@@ -347,13 +409,13 @@ async function handleJsonUpload(
   const download = await context.admin.storage.from(bucket).download(path);
   if (download.error) {
     respond(res, 400, { error: download.error.message || 'Supabase ストレージからの取得に失敗しました。' });
-    return;
+    return null;
   }
 
   const downloadData = download.data;
   if (!downloadData) {
     respond(res, 400, { error: 'アップロードされたファイルを取得できませんでした。' });
-    return;
+    return null;
   }
 
   const arrayBuffer = await downloadData.arrayBuffer();
@@ -361,37 +423,188 @@ async function handleJsonUpload(
 
   if (!fileBuffer.length) {
     respond(res, 400, { error: 'アップロードされたファイルに内容がありません。' });
-    return;
+    return null;
   }
 
   if (fileBuffer.length > MAX_UPLOAD_BYTES) {
     respond(res, 413, { error: 'アップロードされたファイルが大きすぎます。' });
-    return;
+    return null;
   }
 
   const memo = payload.memo || payload.description || '';
   const displayName = payload.displayName || payload.filename || 'document';
   const mimeType = payload.mimeType || payload.contentType || 'application/octet-stream';
+  let outcome: UploadOutcome;
+  try {
+    outcome = await processUploadBuffer({
+      admin: context.admin,
+      supabase: context.supabase,
+      staffId: context.staff.id,
+      storeRow,
+      fileBuffer,
+      originalFilename: displayName,
+      displayName,
+      mimeType,
+      memo,
+    });
+  } finally {
+    try {
+      await context.admin.storage.from(bucket).remove([path]);
+    } catch (cleanupError: any) {
+      console.warn('Failed to clean up staged upload:', cleanupError?.message || cleanupError);
+    }
+  }
 
+  return outcome;
+}
+
+interface UploadBufferContext {
+  admin: ReturnType<typeof getSupabaseAdmin>;
+  supabase: ReturnType<typeof getSupabaseClientWithToken>;
+  staffId: string;
+  storeRow: { id: string; gemini_store_name: string };
+  fileBuffer: Buffer;
+  originalFilename: string;
+  displayName: string;
+  mimeType: string;
+  memo: string;
+}
+
+interface UploadRecordParams {
+  admin: ReturnType<typeof getSupabaseAdmin>;
+  supabase: ReturnType<typeof getSupabaseClientWithToken>;
+  storeRow: { id: string; gemini_store_name: string };
+  staffId: string;
+  baseDescription: string | null;
+  buffer: Buffer;
+  displayName: string;
+  mimeType: string;
+  extraDescription?: string | null;
+}
+
+async function processUploadBuffer(context: UploadBufferContext): Promise<UploadOutcome> {
+  const items: NormalizedFileRecord[] = [];
+  const gemini: GeminiFileUploadResult[] = [];
+  const analyses: GeminiMediaAnalysisResult[] = [];
+  const notes: string[] = [];
+
+  const normalizedMime = (context.mimeType || 'application/octet-stream').toLowerCase();
+  const extension = getExtension(context.originalFilename || context.displayName);
+  const baseDescription = context.memo?.trim() ? context.memo.trim() : null;
+
+  const upload = async (params: {
+    buffer: Buffer;
+    displayName: string;
+    mimeType: string;
+    extraDescription?: string | null;
+  }) => {
+    const result = await uploadAndRecordGeminiFile({
+      admin: context.admin,
+      supabase: context.supabase,
+      storeRow: context.storeRow,
+      staffId: context.staffId,
+      baseDescription,
+      buffer: params.buffer,
+      displayName: params.displayName,
+      mimeType: params.mimeType,
+      extraDescription: params.extraDescription || null,
+    });
+    items.push(result.record);
+    gemini.push(result.gemini);
+    return result;
+  };
+
+  if (isZipType(normalizedMime, extension)) {
+    await upload({
+      buffer: context.fileBuffer,
+      displayName: context.displayName,
+      mimeType: normalizedMime,
+    });
+
+    let summary;
+    try {
+      summary = await buildZipSummaryText(context.fileBuffer, context.originalFilename);
+    } catch (error: any) {
+      throw new Error(error?.message || 'ZIP アーカイブの展開に失敗しました。');
+    }
+    const { text, note } = summary;
+    const extractedName = `${stripExtension(context.displayName || context.originalFilename) || context.displayName}-extracted.txt`;
+    const extraDescription = note
+      ? `ZIP アーカイブから抽出したテキストです。\n${note}`
+      : 'ZIP アーカイブから抽出したテキストです。';
+
+    await upload({
+      buffer: Buffer.from(text, 'utf8'),
+      displayName: extractedName,
+      mimeType: 'text/plain; charset=utf-8',
+      extraDescription,
+    });
+
+    if (note) {
+      notes.push(note);
+    }
+
+    notes.push('ZIP アーカイブを展開してテキスト化しました。');
+  } else if (isImageMime(normalizedMime) || isVideoMime(normalizedMime)) {
+    const original = await upload({
+      buffer: context.fileBuffer,
+      displayName: context.displayName,
+      mimeType: normalizedMime,
+    });
+
+    const analysis = await analyzeFileWithGemini({
+      geminiFileName: original.gemini.geminiFileName,
+      mimeType: normalizedMime,
+    });
+
+    analyses.push(analysis);
+
+    const summaryText = createMediaAnalysisSummary(context.originalFilename, analysis);
+    const summaryName = `${stripExtension(context.displayName || context.originalFilename) || context.displayName}-analysis.txt`;
+
+    await upload({
+      buffer: Buffer.from(summaryText, 'utf8'),
+      displayName: summaryName,
+      mimeType: 'text/plain; charset=utf-8',
+      extraDescription: 'Gemini によるメディア解析テキストです。',
+    });
+
+    notes.push('Gemini がメディアを解析しテキストを生成しました。');
+  } else {
+    await upload({
+      buffer: context.fileBuffer,
+      displayName: context.displayName,
+      mimeType: normalizedMime,
+    });
+  }
+
+  return { items, gemini, analyses, notes };
+}
+
+async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
+  record: NormalizedFileRecord;
+  gemini: GeminiFileUploadResult;
+}> {
+  const description = appendDescription(params.baseDescription, params.extraDescription || null);
   const uploadResult = await uploadFileToStore({
-    storeName: storeRow.gemini_store_name,
-    fileBuffer,
-    mimeType,
-    displayName,
-    description: memo,
+    storeName: params.storeRow.gemini_store_name,
+    fileBuffer: params.buffer,
+    mimeType: params.mimeType,
+    displayName: params.displayName,
+    description: description || undefined,
   });
 
   const insertPayload = {
-    file_store_id: storeRow.id,
+    file_store_id: params.storeRow.id,
     gemini_file_name: uploadResult.geminiFileName,
-    display_name: uploadResult.displayName || displayName,
-    description: memo || null,
-    size_bytes: uploadResult.sizeBytes || payload.sizeBytes || fileBuffer.length,
-    mime_type: uploadResult.mimeType || mimeType,
-    uploaded_by: context.staff.id,
+    display_name: uploadResult.displayName || params.displayName,
+    description: description,
+    size_bytes: uploadResult.sizeBytes || params.buffer.length,
+    mime_type: uploadResult.mimeType || params.mimeType,
+    uploaded_by: params.staffId,
   };
 
-  const { data: adminInserted, error: adminInsertError } = await context.admin
+  const { data: adminInserted, error: adminInsertError } = await params.admin
     .from('file_store_files')
     .insert(insertPayload)
     .select(
@@ -404,7 +617,7 @@ async function handleJsonUpload(
     throw new Error(adminInsertError.message);
   }
 
-  const { data: readerRow } = await context.supabase
+  const { data: readerRow, error: readerError } = await params.supabase
     .from('file_store_files')
     .select(
       'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at'
@@ -412,28 +625,120 @@ async function handleJsonUpload(
     .eq('id', adminInserted.id)
     .maybeSingle();
 
-  const data = readerRow || adminInserted;
-
-  try {
-    await context.admin.storage.from(bucket).remove([path]);
-  } catch (cleanupError: any) {
-    console.warn('Failed to clean up staged upload:', cleanupError?.message || cleanupError);
+  if (readerError) {
+    console.warn('Failed to read back inserted row with user client:', readerError.message);
   }
 
-  res.status(201).json({
-    item: {
-      id: data.id,
-      fileStoreId: data.file_store_id,
-      geminiFileName: data.gemini_file_name,
-      displayName: data.display_name,
-      description: data.description,
-      sizeBytes: data.size_bytes,
-      mimeType: data.mime_type,
-      uploadedBy: data.uploaded_by,
-      uploadedAt: data.uploaded_at,
-    },
-    gemini: uploadResult,
-  });
+  const record = normalizeFileRecord(readerRow || adminInserted);
+
+  return { record, gemini: uploadResult };
+}
+
+async function buildZipSummaryText(buffer: Buffer, originalName: string): Promise<{ text: string; note: string | null }> {
+  let archive;
+  try {
+    archive = await JSZip.loadAsync(buffer);
+  } catch (error: any) {
+    throw new Error(`ZIP ファイルの展開に失敗しました: ${error?.message || error}`);
+  }
+  const entries = Object.values(archive.files || {});
+
+  if (!entries.length) {
+    return {
+      text: `# ZIP 展開レポート: ${originalName}\n\n(アーカイブ内にファイルが見つかりませんでした。)`,
+      note: null,
+    };
+  }
+
+  const textSections: string[] = [];
+  const skipped: string[] = [];
+
+  for (const entry of entries) {
+    if (!entry || entry.dir) {
+      continue;
+    }
+    const entryName = entry.name || 'unknown';
+    const entryExt = getExtension(entryName);
+    if (isTextExtension(entryExt)) {
+      const content = await entry.async('string');
+      textSections.push(`## ${entryName}\n${content}`.trim());
+    } else {
+      skipped.push(entryName);
+    }
+  }
+
+  if (!textSections.length) {
+    textSections.push('(テキストファイルを展開できませんでした。)');
+  }
+
+  let summary = `# ZIP 展開レポート: ${originalName}`;
+  summary += `\n\n${textSections.join('\n\n')}`;
+
+  let note: string | null = null;
+  if (skipped.length) {
+    summary += `\n\n---\nテキスト変換されなかったファイル:\n${skipped
+      .map((name) => `- ${name}`)
+      .join('\n')}`;
+    note = '一部のファイルはテキストに変換できなかったため、一覧として記録しました。';
+  }
+
+  return { text: summary, note };
+}
+
+function createMediaAnalysisSummary(
+  originalName: string,
+  analysis: GeminiMediaAnalysisResult
+): string {
+  const lines: string[] = [];
+  lines.push(`# Gemini メディア解析レポート`);
+  lines.push(`対象ファイル: ${originalName}`);
+  if (analysis.model) {
+    lines.push(`モデル: ${analysis.model}`);
+  }
+
+  if (analysis.text) {
+    lines.push('', analysis.text.trim());
+  }
+
+  if (analysis.candidates.length > 1) {
+    lines.push('', '---', '追加候補:');
+    analysis.candidates.forEach((candidate, index) => {
+      const label = `候補 ${index + 1}`;
+      const detail: string[] = [`## ${label}`];
+      if (candidate.text) {
+        detail.push(candidate.text.trim());
+      }
+      if (candidate.finishReason) {
+        detail.push(`(finishReason: ${candidate.finishReason})`);
+      }
+      lines.push('', detail.join('\n'));
+    });
+  }
+
+  if (analysis.usage) {
+    lines.push('', '---', 'トークン使用量:', JSON.stringify(analysis.usage, null, 2));
+  }
+
+  return lines.join('\n');
+}
+
+function normalizeFileRecord(row: any): NormalizedFileRecord {
+  return {
+    id: row?.id || '',
+    fileStoreId: row?.file_store_id || '',
+    geminiFileName: row?.gemini_file_name || '',
+    displayName: row?.display_name || '',
+    description: row?.description ?? null,
+    sizeBytes:
+      typeof row?.size_bytes === 'number'
+        ? row.size_bytes
+        : row?.size_bytes
+        ? Number(row.size_bytes)
+        : null,
+    mimeType: row?.mime_type || null,
+    uploadedBy: row?.uploaded_by || null,
+    uploadedAt: row?.uploaded_at || null,
+  };
 }
 
 interface ResolveStoreParams {
