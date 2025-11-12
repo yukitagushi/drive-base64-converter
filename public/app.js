@@ -609,32 +609,57 @@ function updateAuthUi() {
 }
 
 function applyGuestUi(isGuest) {
-  const toggleInteractive = (element, disabled) => {
+  const toggleInteractive = (element, disabled, options = {}) => {
     if (!element) return;
+    const { disableElement = true } = options;
+
     if (disabled) {
       if (!element.dataset.guestDisabled) {
         element.dataset.guestDisabled = element.disabled ? 'persist' : 'temp';
       }
-      element.disabled = true;
-      element.classList?.add('is-disabled');
+
+      if (disableElement) {
+        element.disabled = true;
+        element.classList?.add('is-disabled');
+      } else {
+        element.disabled = false;
+        element.setAttribute('aria-disabled', 'true');
+        element.classList?.add('requires-auth');
+      }
     } else if (element.dataset.guestDisabled) {
       const persist = element.dataset.guestDisabled === 'persist';
       delete element.dataset.guestDisabled;
+
+      if (!disableElement && persist) {
+        element.setAttribute('aria-disabled', 'true');
+      } else {
+        element.removeAttribute('aria-disabled');
+      }
+
       if (!persist) {
         element.disabled = false;
       }
+
+      if (!element.disabled) {
+        element.classList?.remove('is-disabled');
+        element.classList?.remove('requires-auth');
+      }
+    } else {
+      if (!disableElement) {
+        element.removeAttribute('aria-disabled');
+        element.classList?.remove('requires-auth');
+      }
+
       if (!element.disabled) {
         element.classList?.remove('is-disabled');
       }
-    } else if (!element.disabled) {
-      element.classList?.remove('is-disabled');
     }
   };
 
-  toggleInteractive(openStoreBtn, isGuest);
-  toggleInteractive(openUploadBtn, isGuest);
+  toggleInteractive(openStoreBtn, isGuest, { disableElement: false });
+  toggleInteractive(openUploadBtn, isGuest, { disableElement: false });
   toggleInteractive(refreshStoresBtn, isGuest);
-  toggleInteractive(startThreadBtn, isGuest);
+  toggleInteractive(startThreadBtn, isGuest, { disableElement: false });
 
   if (chatInput) {
     chatInput.disabled = isGuest;

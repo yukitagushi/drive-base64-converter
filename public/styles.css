@@ -349,6 +349,16 @@ body.show-login #login-screen {
   opacity: 0.55;
 }
 
+.requires-auth {
+  opacity: 0.7;
+  transition: opacity 0.2s ease;
+}
+
+.requires-auth:hover,
+.requires-auth:focus-visible {
+  opacity: 1;
+}
+
 .auth-user {
   position: relative;
   display: flex;
