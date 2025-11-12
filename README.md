@@ -44,6 +44,9 @@ curl -sS "https://<your-domain>/api/documents?fileStoreId=<uuid>"
 curl -sS -X POST "https://<your-domain>/api/documents" \
   -H "Content-Type: application/json" \
   -d '{"fileStoreId":"<uuid>","geminiFileName":"files/demo","displayName":"Spec.pdf","sizeBytes":12345,"mimeType":"application/pdf"}'
+curl -i -X POST "https://<your-domain>/api/auth/login-email" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"secret"}'
 ```
 
 Each endpoint should return `application/json` responses for both success and error cases (e.g., 4xx/5xx).

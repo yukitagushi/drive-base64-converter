@@ -800,6 +800,18 @@ async function onLoginSubmit(event) {
     if (response?.error) {
       throw new Error(response.error || 'ログインに失敗しました');
     }
+    if (response?.supabaseSession) {
+      const supabaseSession = response.supabaseSession;
+      setSupabaseSessionTokens({
+        access_token: supabaseSession.accessToken || null,
+        refresh_token: supabaseSession.refreshToken || null,
+        user: {
+          app_metadata: {
+            provider: supabaseSession.provider || 'email',
+          },
+        },
+      });
+    }
     applyAuthState(response.auth);
     if (response.session) {
       applySessionPayload(response.session);
