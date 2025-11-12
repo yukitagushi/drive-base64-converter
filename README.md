@@ -28,6 +28,16 @@ Large files are staged in Supabase Storage before being forwarded to Gemini so t
 
 The UI enforces a 60 MB cap per upload to keep server-side processing within the limits of Vercel Node Functions.
 
+The `/api/storage/ensure-bucket` endpoint (invoked automatically by the frontend before each upload) will create the private buc
+ket on demand when running against a fresh Supabase project. If you prefer manual setup, run the SQL migrations first so that th
+e row-level security policies reference the correct bucket ID.
+
+## Media analysis support
+
+Gemini Lounge now accepts ZIP archives alongside images, audio, and video files. Binary assets are staged in Supabase Storage, i
+ngested into Gemini File Search, and can be analysed with Google’s multimodal Gemini models via `/api/media/analyze`. The analy
+sis dialog summarises the selected media in Japanese and surfaces the underlying model usage metadata.
+
 ## Demo login
 
 The local fallback (when Supabase credentials are omitted) ships with a demo account:
@@ -74,6 +84,16 @@ curl -sS \
   -H "Content-Type: application/json" \
   -X POST "https://<your-domain>/api/documents" \
   -d '{"fileStoreId":"<uuid>","storageBucket":"gemini-upload-cache","storagePath":"office/demo/sample.pdf","displayName":"sample.pdf"}'
+curl -sS \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -X POST "https://<your-domain>/api/storage/ensure-bucket" \
+  -d '{"bucket":"gemini-upload-cache"}'
+curl -sS \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -X POST "https://<your-domain>/api/media/analyze" \
+  -d '{"fileStoreId":"<uuid>","geminiFileName":"files/abc123","mimeType":"image/png"}'
 curl -i -X POST "https://<your-domain>/api/auth/login-email" \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","password":"secret"}'

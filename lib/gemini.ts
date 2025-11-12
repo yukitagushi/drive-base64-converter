@@ -48,6 +48,20 @@ export interface GeminiFileUploadResult {
   updateTime: string | null;
 }
 
+export interface GeminiMediaAnalysisCandidate {
+  text: string;
+  finishReason: string | null;
+  index: number | null;
+}
+
+export interface GeminiMediaAnalysisResult {
+  text: string;
+  model: string | null;
+  candidates: GeminiMediaAnalysisCandidate[];
+  usage?: Record<string, any> | null;
+  raw?: any;
+}
+
 function getApiKey(): string {
   return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 }
@@ -331,4 +345,90 @@ export async function uploadFileToStore(options: {
   });
 
   return result;
+}
+
+export async function analyzeFileWithGemini(options: {
+  geminiFileName: string;
+  prompt?: string;
+  mimeType?: string;
+  model?: string;
+}): Promise<GeminiMediaAnalysisResult> {
+  const fileName = String(options.geminiFileName || '').trim();
+  if (!fileName) {
+    throw new Error('Gemini に渡すファイル名が指定されていません。');
+  }
+
+  const prompt = options.prompt?.trim() || 'このメディアの内容を要約し、重要なポイントと推奨アクションを日本語で提示してください。';
+  const model = options.model || 'models/gemini-1.5-pro-latest';
+
+  const requestBody = {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: prompt },
+          {
+            fileData:
+              options.mimeType && options.mimeType.trim()
+                ? { fileUri: fileName, mimeType: options.mimeType }
+                : { fileUri: fileName },
+          },
+        ],
+      },
+    ],
+  };
+
+  const url = `${GEMINI_API_BASE}/${encodePath(model)}:generateContent`;
+  const response = await geminiFetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  const raw = await response.text();
+  const payload = parsePayload(raw);
+
+  if (!response.ok) {
+    const message = extractErrorMessage(payload, 'Gemini メディア分析に失敗しました。');
+    const debugId = extractDebugId(payload);
+    console.error('Gemini analyzeFile error', {
+      status: response.status,
+      body: typeof raw === 'string' ? raw.slice(0, 512) : raw,
+      debugId,
+    });
+    throw new GeminiApiError(`${message} (${response.status})`, {
+      status: response.status,
+      debugId,
+      body: payload,
+    });
+  }
+
+  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+  const normalizedCandidates: GeminiMediaAnalysisCandidate[] = candidates.map((candidate: any) => {
+    const parts = candidate?.content?.parts || candidate?.content || [];
+    const textParts: string[] = [];
+    for (const part of parts) {
+      if (part?.text) {
+        textParts.push(String(part.text));
+      }
+    }
+    const combined = textParts.join('\n').trim();
+    return {
+      text: combined,
+      finishReason: candidate?.finishReason || candidate?.finish_reason || null,
+      index: typeof candidate?.index === 'number' ? candidate.index : null,
+    };
+  });
+
+  const primary = normalizedCandidates.find((candidate) => candidate.text) || null;
+
+  return {
+    text: primary?.text || '',
+    model: payload?.modelVersion || payload?.model || null,
+    candidates: normalizedCandidates,
+    usage: payload?.usageMetadata || payload?.usage_metadata || null,
+    raw: payload,
+  };
 }

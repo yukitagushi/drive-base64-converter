@@ -6,6 +6,7 @@ import {
 } from '../lib/api-auth';
 import { getSupabaseClientWithToken } from '../lib/supabaseClient';
 import { GeminiApiError, uploadFileToStore } from '../lib/gemini';
+import { ensureStorageBucket } from '../lib/storage';
 
 const DEFAULT_UPLOAD_BUCKET = 'gemini-upload-cache';
 const MAX_UPLOAD_BYTES = 60 * 1024 * 1024; // 60MB safety cap for server-side processing
@@ -328,6 +329,8 @@ async function handleJsonUpload(
   const storeRow = resolvedStore.storeRow;
   const bucket = storageBucket;
   const path = storagePath;
+
+  await ensureStorageBucket({ bucket, admin: context.admin, sizeLimitBytes: MAX_UPLOAD_BYTES });
 
   const download = await context.admin.storage.from(bucket).download(path);
   if (download.error) {

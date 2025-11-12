@@ -48,6 +48,12 @@ let uploadNotesInput;
 let uploadFeedback;
 let submitUploadBtn;
 
+let analysisDialog;
+let analysisTitle;
+let analysisMeta;
+let analysisFeedback;
+let analysisOutput;
+
 let documentList;
 let documentForm;
 let documentError;
@@ -140,6 +146,12 @@ function cacheDomElements() {
   uploadNotesInput = document.getElementById('upload-notes');
   uploadFeedback = document.getElementById('upload-feedback');
   submitUploadBtn = document.getElementById('submit-upload');
+
+  analysisDialog = document.getElementById('analysis-dialog');
+  analysisTitle = document.getElementById('analysis-title');
+  analysisMeta = document.getElementById('analysis-meta');
+  analysisFeedback = document.getElementById('analysis-feedback');
+  analysisOutput = document.getElementById('analysis-output');
 
   documentList = document.getElementById('document-list');
   documentForm = document.getElementById('document-form');
@@ -240,6 +252,9 @@ const sessionState = {
 
 const SUPABASE_UPLOAD_BUCKET = 'gemini-upload-cache';
 const MAX_UPLOAD_BYTES = 60 * 1024 * 1024; // 60MB safety cap for uploads via Supabase storage
+
+let uploadBucketReady = false;
+let uploadBucketPromise = null;
 
 const authState = {
   authenticated: false,
@@ -461,6 +476,33 @@ async function safeFetch(url, options = {}) {
   }
 
   return responseBody;
+}
+
+async function ensureUploadBucketReady() {
+  if (uploadBucketReady) {
+    return true;
+  }
+  if (uploadBucketPromise) {
+    return uploadBucketPromise;
+  }
+
+  uploadBucketPromise = safeFetch('/api/storage/ensure-bucket', {
+    method: 'POST',
+    body: JSON.stringify({ bucket: SUPABASE_UPLOAD_BUCKET }),
+  })
+    .then(() => {
+      uploadBucketReady = true;
+      return true;
+    })
+    .catch((error) => {
+      uploadBucketReady = false;
+      throw error;
+    })
+    .finally(() => {
+      uploadBucketPromise = null;
+    });
+
+  return uploadBucketPromise;
 }
 
 function getCachedPublicSupabaseConfig() {
@@ -758,6 +800,24 @@ async function init() {
     });
   }
 
+  if (analysisDialog) {
+    analysisDialog.addEventListener('close', () => {
+      if (analysisFeedback) {
+        analysisFeedback.textContent = '';
+      }
+      if (analysisOutput) {
+        analysisOutput.textContent = '';
+      }
+      if (analysisMeta) {
+        analysisMeta.textContent = '';
+      }
+    });
+    analysisDialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      closeDialog(analysisDialog);
+    });
+  }
+
   uploadFileInput.addEventListener('change', onUploadFileChange);
   uploadStoreSelect.addEventListener('change', updateUploadButtonState);
 
@@ -794,6 +854,7 @@ async function init() {
   setupDialogDismissal(uploadDialog);
   setupDialogDismissal(authDialog);
   setupDialogDismissal(accountRequestDialog);
+  setupDialogDismissal(analysisDialog);
 
   storeList.addEventListener('click', onStoreListClick);
 }
@@ -2156,6 +2217,9 @@ async function onUploadFile(event) {
     const notes = uploadNotesInput.value.trim();
     const selectedStore = storeCache.find((entry) => entry.id === storeId) || null;
 
+    uploadFeedback.textContent = 'アップロード先を準備しています...';
+    await ensureUploadBucketReady();
+
     uploadFeedback.textContent = 'ファイルを準備しています...';
     const objectPath = buildStorageObjectPath(file.name);
     let stagedPath = objectPath;
@@ -2305,6 +2369,11 @@ async function toggleStoreFiles(card, button, storeId) {
   button.textContent = '読み込み中...';
   container.innerHTML = '';
   container.hidden = false;
+  container.dataset.storeId = storeId;
+  if (!container.dataset.listenerBound) {
+    container.addEventListener('click', onStoreFileAction);
+    container.dataset.listenerBound = '1';
+  }
 
   try {
     let files = storeFilesCache.get(storeId);
@@ -2338,14 +2407,148 @@ function renderFileList(container, files) {
   for (const file of files) {
     const row = document.createElement('div');
     row.className = 'file-row';
-    const left = document.createElement('span');
-    left.textContent = file.displayName || file.name;
-    const right = document.createElement('span');
+    row.dataset.fileId = file.id || '';
+    row.dataset.fileStoreId = file.fileStoreId || '';
+    row.dataset.geminiFileName = file.geminiFileName || '';
+    row.dataset.displayName = file.displayName || file.name || '';
+    row.dataset.mimeType = file.mimeType || '';
+
+    const info = document.createElement('div');
+    info.className = 'file-row__info';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'file-row__name';
+    nameEl.textContent = file.displayName || file.name || 'ファイル';
+
+    const metaEl = document.createElement('span');
+    metaEl.className = 'file-row__meta';
     const timestamp = file.uploadedAt || file.updatedAt || file.updateTime || file.createTime || file.createdAt;
-    right.textContent = `${formatBytes(file.sizeBytes || 0)} / ${formatDate(timestamp)}`;
-    row.appendChild(left);
-    row.appendChild(right);
+    metaEl.textContent = `${formatBytes(file.sizeBytes || 0)} ・ ${formatDate(timestamp)}`;
+
+    info.appendChild(nameEl);
+    info.appendChild(metaEl);
+
+    const actions = document.createElement('div');
+    actions.className = 'file-row__actions';
+
+    if (file.geminiFileName) {
+      const analyzeBtn = document.createElement('button');
+      analyzeBtn.type = 'button';
+      analyzeBtn.className = 'btn btn-ghost btn-compact';
+      analyzeBtn.dataset.action = 'analyze-file';
+      analyzeBtn.textContent = isMediaMimeType(file.mimeType) ? 'メディア分析' : '内容要約';
+      analyzeBtn.title = 'Gemini でファイルを分析する';
+      actions.appendChild(analyzeBtn);
+    }
+
+    row.appendChild(info);
+    row.appendChild(actions);
     container.appendChild(row);
+  }
+}
+
+function isMediaMimeType(mimeType) {
+  if (!mimeType) {
+    return false;
+  }
+  const lower = String(mimeType).toLowerCase();
+  return lower.startsWith('image/') || lower.startsWith('video/') || lower.startsWith('audio/');
+}
+
+async function onStoreFileAction(event) {
+  const button = event.target.closest('button[data-action]');
+  if (!button) {
+    return;
+  }
+
+  const container = event.currentTarget;
+  const row = button.closest('.file-row');
+  if (!row) {
+    return;
+  }
+
+  const storeId = row.dataset.fileStoreId || container.dataset.storeId || '';
+  const geminiFileName = row.dataset.geminiFileName || '';
+  const displayName = row.dataset.displayName || '';
+  const mimeType = row.dataset.mimeType || '';
+
+  if (button.dataset.action === 'analyze-file') {
+    await analyzeStoreFile({ storeId, geminiFileName, displayName, mimeType });
+  }
+}
+
+async function analyzeStoreFile({ storeId, geminiFileName, displayName, mimeType }) {
+  if (!ensureAuthenticated({ message: 'メディアを分析するにはログインしてください。' })) {
+    return;
+  }
+
+  if (!analysisDialog) {
+    console.warn('Analysis dialog is unavailable.');
+    return;
+  }
+
+  if (!geminiFileName) {
+    showToast('Gemini ファイル名が未登録のため分析できません。', { type: 'error' });
+    return;
+  }
+
+  const title = displayName ? `"${displayName}" を分析` : 'ファイルを分析';
+  if (analysisTitle) {
+    analysisTitle.textContent = title;
+  }
+  if (analysisMeta) {
+    analysisMeta.textContent = mimeType ? `MIME: ${mimeType}` : '';
+  }
+  if (analysisFeedback) {
+    analysisFeedback.textContent = '';
+  }
+  if (analysisOutput) {
+    analysisOutput.textContent = 'Gemini がメディアを解析しています...';
+  }
+
+  openDialog(analysisDialog);
+
+  try {
+    const payload = {
+      fileStoreId: storeId,
+      geminiFileName,
+      displayName,
+      mimeType,
+    };
+    const data = await safeFetch('/api/media/analyze', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+
+    const result = data?.result || {};
+    const text = result.text || data?.text || '';
+
+    if (analysisOutput) {
+      analysisOutput.textContent = text || '分析結果を取得できませんでした。';
+    }
+
+    if (analysisMeta) {
+      const segments = [];
+      if (mimeType) {
+        segments.push(`MIME: ${mimeType}`);
+      }
+      if (result.model) {
+        segments.push(`Model: ${result.model}`);
+      }
+      if (result.usage?.totalTokens || result.usage?.totalTokenCount) {
+        const tokens = result.usage.totalTokens || result.usage.totalTokenCount;
+        segments.push(`Tokens: ${tokens}`);
+      }
+      analysisMeta.textContent = segments.join(' / ');
+    }
+  } catch (error) {
+    console.error('Media analysis failed:', error);
+    if (analysisFeedback) {
+      analysisFeedback.textContent = formatHttpError(error, 'メディア分析に失敗しました。');
+    }
+    if (analysisOutput) {
+      analysisOutput.textContent = '分析結果を取得できませんでした。';
+    }
   }
 }
 

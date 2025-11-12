@@ -247,11 +247,16 @@
         </header>
         <div class="modal__body">
           <p class="modal__intro">
-            PDF / TXT / MD などのファイルを選択し、保存するファイルサーチストアを指定してください。
+            PDF / TXT / MD に加えて ZIP、画像、動画、音声ファイルもアップロードできます。保存するファイルサーチストアを選択してから Gemini に登録してください。
           </p>
           <label class="field">
             <span class="field__label">ファイル</span>
-            <input type="file" id="upload-file" accept=".pdf,.txt,.md,.csv,.doc,.docx,.ppt,.pptx,.json,.yaml,.yml,.xml,.html,.zip" required />
+            <input
+              type="file"
+              id="upload-file"
+              accept=".pdf,.txt,.md,.csv,.doc,.docx,.ppt,.pptx,.json,.yaml,.yml,.xml,.html,.zip,image/*,video/*,audio/*"
+              required
+            />
             <span id="upload-summary" class="field-hint">ファイルを選択すると詳細が表示されます。</span>
           </label>
           <label class="field">
@@ -272,6 +277,23 @@
           <button id="submit-upload" class="btn btn-solid" type="submit" disabled>アップロード</button>
         </footer>
       </form>
+    </dialog>
+
+    <dialog id="analysis-dialog" class="modal">
+      <div class="modal__surface">
+        <header class="modal__header">
+          <h2 id="analysis-title">ファイルを分析</h2>
+          <button class="btn btn-icon" type="button" data-close-dialog="analysis-dialog" aria-label="閉じる">×</button>
+        </header>
+        <div class="modal__body">
+          <p id="analysis-meta" class="modal__meta"></p>
+          <p id="analysis-feedback" class="form-error" role="alert"></p>
+          <article id="analysis-output" class="analysis-output">Gemini がメディアを解析しています...</article>
+        </div>
+        <footer class="modal__footer">
+          <button class="btn btn-solid" type="button" data-close-dialog="analysis-dialog">閉じる</button>
+        </footer>
+      </div>
     </dialog>
 
     <dialog
