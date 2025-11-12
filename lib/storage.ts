@@ -41,7 +41,7 @@ export async function ensureStorageBucket(options: EnsureBucketOptions): Promise
 
       const needsUpdate = Number.isFinite(currentLimit) && currentLimit > 0 && desiredLimit > currentLimit;
       if (needsUpdate) {
-        const updateOptions: Record<string, any> = { public: isPublic };
+        const updateOptions: { public: boolean; fileSizeLimit?: string } = { public: isPublic };
         if (desiredLimit > 0) {
           updateOptions.fileSizeLimit = String(desiredLimit);
         }
@@ -58,7 +58,7 @@ export async function ensureStorageBucket(options: EnsureBucketOptions): Promise
     throw new Error(error.message || 'Supabase ストレージの取得に失敗しました。');
   }
 
-  const createOptions: Record<string, any> = { public: isPublic };
+  const createOptions: { public: boolean; fileSizeLimit?: string } = { public: isPublic };
   const limitIsFinite = Number.isFinite(sizeLimit) && sizeLimit > 0;
   if (limitIsFinite) {
     createOptions.fileSizeLimit = String(Math.floor(sizeLimit));
