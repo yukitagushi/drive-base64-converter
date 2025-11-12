@@ -174,7 +174,13 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
       ? sanitizeStoreId(body.geminiStoreId.trim(), displayName)
       : sanitizeStoreId(displayName);
 
-  const store = await createFileStore(requestedStoreId, displayName);
+  const store = await createFileStore(displayName, { storeId: requestedStoreId });
+
+  if (!store.storeName) {
+    console.error('Gemini did not return a store name.');
+    respond(res, 502, { error: 'Gemini ストアの作成結果に識別子が含まれていません。' });
+    return;
+  }
 
   const insertPayload = {
     id: body.id && typeof body.id === 'string' ? body.id : undefined,

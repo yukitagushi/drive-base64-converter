@@ -2132,6 +2132,11 @@ async function onUploadFile(event) {
       formData.append('memo', notes);
     }
 
+    const selectedStore = storeCache.find((entry) => entry.id === storeId) || null;
+    if (selectedStore?.geminiStoreName) {
+      formData.append('fileStoreName', selectedStore.geminiStoreName);
+    }
+
     const data = await safeFetch('/api/documents', {
       method: 'POST',
       body: formData,

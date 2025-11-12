@@ -1,7 +1,6 @@
 const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com';
 const GEMINI_API_BASE = `${GEMINI_API_ROOT}/v1beta`;
 const GEMINI_UPLOAD_BASE = `${GEMINI_API_ROOT}/upload/v1beta`;
-const DEFAULT_LOCATION = process.env.GEMINI_LOCATION || 'global';
 
 export class GeminiApiError extends Error {
   status?: number;
@@ -59,40 +58,6 @@ function ensureApiKey(): string {
     throw new Error('Gemini File Search を利用するには GEMINI_API_KEY (または GOOGLE_API_KEY) が必要です。');
   }
   return apiKey;
-}
-
-function getProjectId(): string {
-  return (
-    process.env.GEMINI_PROJECT_ID ||
-    process.env.GEMINI_PROJECT_NUMBER ||
-    process.env.GOOGLE_PROJECT_ID ||
-    process.env.GOOGLE_CLOUD_PROJECT ||
-    ''
-  );
-}
-
-function ensureProjectId(): string {
-  const projectId = getProjectId();
-  if (!projectId) {
-    throw new Error(
-      'Gemini File Search を利用するには GEMINI_PROJECT_ID (または GOOGLE_PROJECT_ID / GOOGLE_CLOUD_PROJECT) を設定してください。'
-    );
-  }
-  return projectId;
-}
-
-function ensureLocation(): string {
-  const location = DEFAULT_LOCATION.trim();
-  if (!location) {
-    return 'global';
-  }
-  return location;
-}
-
-function ensureParentResource(): string {
-  const projectId = ensureProjectId();
-  const location = ensureLocation();
-  return `projects/${projectId}/locations/${location}`;
 }
 
 function normalizeStore(entry: GeminiStoreResponse): GeminiStoreResult {
@@ -168,16 +133,12 @@ function ensureStoreResourceName(nameOrId: string, displayName?: string): string
     throw new Error('Gemini ストア名が指定されていません。');
   }
 
-  if (trimmed.startsWith('projects/')) {
+  if (trimmed.startsWith('fileSearchStores/')) {
     return trimmed;
   }
 
-  if (trimmed.startsWith('fileStores/')) {
-    return `${ensureParentResource()}/${trimmed}`;
-  }
-
   const slug = sanitizeStoreId(trimmed, displayName || undefined);
-  return `${ensureParentResource()}/fileStores/${slug}`;
+  return `fileSearchStores/${slug}`;
 }
 
 async function geminiFetch(url: string, init?: RequestInit) {
@@ -229,20 +190,20 @@ function parsePayload(raw: string): any {
 }
 
 export async function createFileStore(
-  requestedId: string,
-  displayName?: string
+  displayName: string,
+  options: { storeId?: string | null } = {}
 ): Promise<GeminiStoreResult> {
-  const slug = sanitizeStoreId(requestedId, displayName);
   const label = typeof displayName === 'string' ? displayName.trim() : '';
-  const parent = ensureParentResource();
-  const resourceName = `${parent}/fileStores/${slug}`;
-
   const body: Record<string, string> = {};
   if (label) {
     body.displayName = label;
   }
+  const sanitizedId = options.storeId ? sanitizeStoreId(options.storeId, label) : null;
+  if (sanitizedId) {
+    body.fileSearchStoreId = sanitizedId;
+  }
 
-  const url = `${GEMINI_API_BASE}/${encodePath(parent)}/fileStores?fileStoreId=${encodeURIComponent(slug)}`;
+  const url = `${GEMINI_API_BASE}/fileSearchStores`;
   const response = await geminiFetch(url, {
     method: 'POST',
     headers: {
@@ -255,12 +216,13 @@ export async function createFileStore(
   const payload = parsePayload(raw);
 
   if (response.status === 409) {
+    const fallbackName = sanitizedId ? `fileSearchStores/${sanitizedId}` : null;
     console.warn('Gemini store already exists – treating as success.', {
-      store: resourceName,
+      store: fallbackName,
     });
     return {
-      storeName: resourceName,
-      displayName: label || slug,
+      storeName: fallbackName || '',
+      displayName: label || sanitizedId || '',
       createTime: null,
       updateTime: null,
     };
@@ -282,8 +244,8 @@ export async function createFileStore(
   }
 
   const result = normalizeStore(payload as GeminiStoreResponse);
-  if (!result.storeName) {
-    result.storeName = resourceName;
+  if (!result.storeName && sanitizedId) {
+    result.storeName = `fileSearchStores/${sanitizedId}`;
   }
 
   console.info('Gemini store created:', {
@@ -295,10 +257,10 @@ export async function createFileStore(
 }
 
 export async function createFileStoreIfNeeded(
-  storeId: string,
-  displayName?: string
+  displayName: string,
+  options: { storeId?: string | null } = {}
 ): Promise<GeminiStoreResult> {
-  return createFileStore(storeId, displayName);
+  return createFileStore(displayName, options);
 }
 
 export async function uploadFileToStore(options: {
@@ -313,7 +275,6 @@ export async function uploadFileToStore(options: {
   }
 
   const storeResource = ensureStoreResourceName(options.storeName, options.displayName);
-  ensureParentResource();
 
   const metadata: Record<string, string> = {};
   if (options.displayName) {
@@ -328,18 +289,19 @@ export async function uploadFileToStore(options: {
     : options.fileBuffer;
 
   const form = new FormData();
-  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  if (Object.keys(metadata).length) {
+    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  }
   form.append(
     'file',
     new Blob([fileBytes], { type: options.mimeType || 'application/octet-stream' }),
     options.displayName || 'document'
   );
 
-  const parent = ensureParentResource();
   const apiKey = ensureApiKey();
-  const uploadUrl = `${GEMINI_UPLOAD_BASE}/files:upload?uploadType=multipart&parent=${encodeURIComponent(
-    parent
-  )}&key=${encodeURIComponent(apiKey)}`;
+  const uploadUrl = `${GEMINI_UPLOAD_BASE}/${encodePath(storeResource)}:uploadToFileSearchStore?uploadType=multipart&key=${encodeURIComponent(
+    apiKey
+  )}`;
   const uploadResponse = await fetch(uploadUrl, {
     method: 'POST',
     headers: {
@@ -376,8 +338,6 @@ export async function uploadFileToStore(options: {
     });
   }
 
-  await batchAddFilesToStore(storeResource, [result.geminiFileName]);
-
   console.info('Gemini file uploaded:', {
     name: result.geminiFileName,
     displayName: result.displayName,
@@ -386,40 +346,4 @@ export async function uploadFileToStore(options: {
   });
 
   return result;
-}
-
-async function batchAddFilesToStore(storeResource: string, fileNames: string[]): Promise<void> {
-  if (!fileNames.length) {
-    return;
-  }
-
-  const body = {
-    files: fileNames.map((file) => ({ file })),
-  };
-
-  const response = await geminiFetch(`${GEMINI_API_BASE}/${encodePath(storeResource)}:batchAddFiles`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-
-  const raw = await response.text();
-  const payload = parsePayload(raw);
-
-  if (!response.ok) {
-    const message = extractErrorMessage(payload, 'Gemini ストアへのファイル関連付けに失敗しました。');
-    const debugId = extractDebugId(payload);
-    console.error('Gemini batchAddFiles error', {
-      status: response.status,
-      body: typeof raw === 'string' ? raw.slice(0, 512) : raw,
-      debugId,
-    });
-    throw new GeminiApiError(message, {
-      status: response.status,
-      debugId,
-      body: payload,
-    });
-  }
 }

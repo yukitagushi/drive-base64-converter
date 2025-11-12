@@ -159,12 +159,14 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
   }
 
   const { fields, files } = parsed;
-  const fileStoreId = fields.fileStoreId || fields.file_store_id;
+  let fileStoreId = fields.fileStoreId || fields.file_store_id || '';
+  const fileStoreNameField =
+    fields.fileSearchStoreName || fields.file_store_name || fields.fileStoreName || fields.geminiStoreName || '';
   const memo = fields.memo || fields.description || '';
   const displayNameField = fields.displayName || fields.filename || '';
 
-  if (!fileStoreId) {
-    respond(res, 400, { error: 'fileStoreId は必須です。' });
+  if (!fileStoreId && !fileStoreNameField) {
+    respond(res, 400, { error: 'fileStoreId または fileStoreName を指定してください。' });
     return;
   }
 
@@ -174,11 +176,28 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const { data: storeRow, error: storeError } = await supabase
-    .from('file_stores')
-    .select('id, gemini_store_name, organization_id, office_id')
-    .eq('id', fileStoreId)
-    .maybeSingle();
+  let storeRow = null;
+  let storeError = null;
+  if (fileStoreId) {
+    const { data, error } = await supabase
+      .from('file_stores')
+      .select('id, gemini_store_name, organization_id, office_id')
+      .eq('id', fileStoreId)
+      .maybeSingle();
+    storeRow = data;
+    storeError = error;
+  } else if (fileStoreNameField) {
+    const { data, error } = await supabase
+      .from('file_stores')
+      .select('id, gemini_store_name, organization_id, office_id')
+      .eq('gemini_store_name', fileStoreNameField)
+      .maybeSingle();
+    storeRow = data;
+    storeError = error;
+    if (data?.id) {
+      fileStoreId = data.id;
+    }
+  }
 
   if (storeError) {
     throw new Error(storeError.message);
@@ -191,6 +210,11 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
       return;
     }
     respond(res, 404, { error: '指定したストアが見つかりません。' });
+    return;
+  }
+
+  if (fileStoreNameField && storeRow.gemini_store_name !== fileStoreNameField) {
+    respond(res, 400, { error: '送信された fileStoreName が一致しません。' });
     return;
   }
 
