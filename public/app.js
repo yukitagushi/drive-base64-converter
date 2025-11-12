@@ -1,85 +1,206 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2?bundle';
 
-const appShell = document.querySelector('.app-shell');
-const landingScreen = document.getElementById('landing-screen');
-const loginScreen = document.getElementById('login-screen');
-const accountRequestTrigger = document.getElementById('account-request-trigger');
-const accountRequestDialog = document.getElementById('account-request-dialog');
-const accountRequestNotice = document.getElementById('account-request-notice');
-const accountRequestConfirm = document.getElementById('account-request-confirm');
-const accountRequestCancel = document.getElementById('account-request-cancel');
-const landingRequestButton = document.getElementById('landing-request');
-const loginBackButton = document.getElementById('login-back');
+let appShell;
+let landingScreen;
+let loginScreen;
+let accountRequestTrigger;
+let accountRequestDialog;
+let accountRequestNotice;
+let accountRequestConfirm;
+let accountRequestCancel;
+let landingRequestButton;
+let loginBackButton;
 
-const messageList = document.getElementById('message-list');
-const chatForm = document.getElementById('chat-form');
-const chatInput = document.getElementById('chat-input');
-const chatSubmitButton = document.querySelector('#chat-form button[type="submit"]');
-const statusIndicator = document.getElementById('status-indicator');
-const template = document.getElementById('message-template');
+let messageList;
+let chatForm;
+let chatInput;
+let chatSubmitButton;
+let statusIndicator;
+let template;
 
-const apiStatusPill = document.querySelector('.status-pill');
-const apiStatusText = document.getElementById('api-status');
-const refreshStoresBtn = document.getElementById('refresh-stores');
-const storeList = document.getElementById('store-list');
-const storeEmpty = document.getElementById('store-empty');
-const storeError = document.getElementById('store-error');
+let apiStatusPill;
+let apiStatusText;
+let refreshStoresBtn;
+let storeList;
+let storeEmpty;
+let storeError;
 
-const sessionOfficeSelect = document.getElementById('session-office');
-const sessionStaffSelect = document.getElementById('session-staff');
-const startThreadBtn = document.getElementById('start-thread');
-const threadList = document.getElementById('thread-list');
-const sessionHint = document.querySelector('.session-hint');
+let sessionOfficeSelect;
+let sessionStaffSelect;
+let startThreadBtn;
+let threadList;
+let sessionHint;
 
-const openStoreBtn = document.getElementById('open-store');
-const storeDialog = document.getElementById('store-dialog');
-const storeForm = document.getElementById('store-form');
-const storeNameInput = document.getElementById('store-name');
-const storeFeedback = document.getElementById('store-feedback');
-const submitStoreBtn = document.getElementById('submit-store');
+let openStoreBtn;
+let storeDialog;
+let storeForm;
+let storeNameInput;
+let storeFeedback;
+let submitStoreBtn;
 
-const openUploadBtn = document.getElementById('open-upload');
-const uploadDialog = document.getElementById('upload-dialog');
-const uploadForm = document.getElementById('upload-form');
-const uploadFileInput = document.getElementById('upload-file');
-const uploadSummary = document.getElementById('upload-summary');
-const uploadStoreSelect = document.getElementById('upload-store');
-const uploadNotesInput = document.getElementById('upload-notes');
-const uploadFeedback = document.getElementById('upload-feedback');
-const submitUploadBtn = document.getElementById('submit-upload');
+let openUploadBtn;
+let uploadDialog;
+let uploadForm;
+let uploadFileInput;
+let uploadSummary;
+let uploadStoreSelect;
+let uploadNotesInput;
+let uploadFeedback;
+let submitUploadBtn;
 
-const documentList = document.getElementById('document-list');
-const documentForm = document.getElementById('document-form');
-const documentError = document.getElementById('document-error');
-const docTitle = document.getElementById('doc-title');
-const docContent = document.getElementById('doc-content');
+let documentList;
+let documentForm;
+let documentError;
+let docTitle;
+let docContent;
 
-const authTrigger = document.getElementById('auth-trigger');
-const authUserContainer = document.getElementById('auth-user');
-const authUserButton = document.getElementById('auth-user-button');
-const authUserInitial = document.getElementById('auth-user-initial');
-const authUserLabel = document.getElementById('auth-user-label');
-const authMenu = document.getElementById('auth-menu');
-const authMenuName = document.getElementById('auth-menu-name');
-const authMenuEmail = document.getElementById('auth-menu-email');
-const authMenuLogout = document.getElementById('auth-menu-logout');
-const authDialog = document.getElementById('auth-dialog');
-const authTabs = Array.from(document.querySelectorAll('[data-auth-tab]'));
-const authPanels = Array.from(document.querySelectorAll('[data-auth-panel]'));
-const loginForm = document.getElementById('login-form');
-const loginEmailInput = document.getElementById('login-email');
-const loginPasswordInput = document.getElementById('login-password');
-const registerForm = document.getElementById('register-form');
-const registerNameInput = document.getElementById('register-name');
-const registerEmailInput = document.getElementById('register-email');
-const registerPasswordInput = document.getElementById('register-password');
-const registerOrganizationInput = document.getElementById('register-organization');
-const registerOfficeInput = document.getElementById('register-office');
-const authFeedback = document.getElementById('auth-feedback');
-const googleLoginBtn = document.getElementById('google-login');
-const googleHint = document.getElementById('google-hint');
+let authTrigger;
+let authUserContainer;
+let authUserButton;
+let authUserInitial;
+let authUserLabel;
+let authMenu;
+let authMenuName;
+let authMenuEmail;
+let authMenuLogout;
+let authDialog;
+let authTabs = [];
+let authPanels = [];
+let loginForm;
+let loginEmailInput;
+let loginPasswordInput;
+let registerForm;
+let registerNameInput;
+let registerEmailInput;
+let registerPasswordInput;
+let registerOrganizationInput;
+let registerOfficeInput;
+let authFeedback;
+let googleLoginBtn;
+let googleHint;
 
-const toastContainer = createToastContainer();
+let toastContainer;
+
+function cacheDomElements() {
+  appShell = document.querySelector('.app-shell');
+  landingScreen = document.getElementById('landing-screen');
+  loginScreen = document.getElementById('login-screen');
+  accountRequestTrigger = document.getElementById('account-request-trigger');
+  accountRequestDialog = document.getElementById('account-request-dialog');
+  accountRequestNotice = document.getElementById('account-request-notice');
+  accountRequestConfirm = document.getElementById('account-request-confirm');
+  accountRequestCancel = document.getElementById('account-request-cancel');
+  landingRequestButton = document.getElementById('landing-request');
+  loginBackButton = document.getElementById('login-back');
+
+  messageList = document.getElementById('message-list');
+  chatForm = document.getElementById('chat-form');
+  chatInput = document.getElementById('chat-input');
+  chatSubmitButton = document.querySelector('#chat-form button[type="submit"]');
+  statusIndicator = document.getElementById('status-indicator');
+  template = document.getElementById('message-template');
+
+  apiStatusPill = document.querySelector('.status-pill');
+  apiStatusText = document.getElementById('api-status');
+  refreshStoresBtn = document.getElementById('refresh-stores');
+  storeList = document.getElementById('store-list');
+  storeEmpty = document.getElementById('store-empty');
+  storeError = document.getElementById('store-error');
+
+  sessionOfficeSelect = document.getElementById('session-office');
+  sessionStaffSelect = document.getElementById('session-staff');
+  startThreadBtn = document.getElementById('start-thread');
+  threadList = document.getElementById('thread-list');
+  sessionHint = document.querySelector('.session-hint');
+
+  openStoreBtn = document.getElementById('open-store');
+  storeDialog = document.getElementById('store-dialog');
+  storeForm = document.getElementById('store-form');
+  storeNameInput = document.getElementById('store-name');
+  storeFeedback = document.getElementById('store-feedback');
+  submitStoreBtn = document.getElementById('submit-store');
+
+  openUploadBtn = document.getElementById('open-upload');
+  uploadDialog = document.getElementById('upload-dialog');
+  uploadForm = document.getElementById('upload-form');
+  uploadFileInput = document.getElementById('upload-file');
+  uploadSummary = document.getElementById('upload-summary');
+  uploadStoreSelect = document.getElementById('upload-store');
+  uploadNotesInput = document.getElementById('upload-notes');
+  uploadFeedback = document.getElementById('upload-feedback');
+  submitUploadBtn = document.getElementById('submit-upload');
+
+  documentList = document.getElementById('document-list');
+  documentForm = document.getElementById('document-form');
+  documentError = document.getElementById('document-error');
+  docTitle = document.getElementById('doc-title');
+  docContent = document.getElementById('doc-content');
+
+  authTrigger = document.getElementById('auth-trigger');
+  authUserContainer = document.getElementById('auth-user');
+  authUserButton = document.getElementById('auth-user-button');
+  authUserInitial = document.getElementById('auth-user-initial');
+  authUserLabel = document.getElementById('auth-user-label');
+  authMenu = document.getElementById('auth-menu');
+  authMenuName = document.getElementById('auth-menu-name');
+  authMenuEmail = document.getElementById('auth-menu-email');
+  authMenuLogout = document.getElementById('auth-menu-logout');
+  authDialog = document.getElementById('auth-dialog');
+  authTabs = Array.from(document.querySelectorAll('[data-auth-tab]'));
+  authPanels = Array.from(document.querySelectorAll('[data-auth-panel]'));
+  loginForm = document.getElementById('login-form');
+  loginEmailInput = document.getElementById('login-email');
+  loginPasswordInput = document.getElementById('login-password');
+  registerForm = document.getElementById('register-form');
+  registerNameInput = document.getElementById('register-name');
+  registerEmailInput = document.getElementById('register-email');
+  registerPasswordInput = document.getElementById('register-password');
+  registerOrganizationInput = document.getElementById('register-organization');
+  registerOfficeInput = document.getElementById('register-office');
+  authFeedback = document.getElementById('auth-feedback');
+  googleLoginBtn = document.getElementById('google-login');
+  googleHint = document.getElementById('google-hint');
+
+  toastContainer = createToastContainer();
+}
+
+async function waitForDom() {
+  if (document.readyState === 'loading') {
+    await new Promise((resolve) => {
+      document.addEventListener('DOMContentLoaded', resolve, { once: true });
+    });
+  }
+
+  let attempts = 0;
+  const requiredCheck = () =>
+    appShell &&
+    loginScreen &&
+    messageList &&
+    chatForm &&
+    chatInput &&
+    template &&
+    openStoreBtn &&
+    openUploadBtn &&
+    authTrigger;
+
+  cacheDomElements();
+  if (requiredCheck()) {
+    return;
+  }
+
+  while (!requiredCheck() && attempts < 5) {
+    cacheDomElements();
+    if (requiredCheck()) {
+      break;
+    }
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    attempts += 1;
+  }
+
+  if (!requiredCheck()) {
+    cacheDomElements();
+  }
+}
 
 let conversationHistory = [];
 let isSending = false;
@@ -196,8 +317,8 @@ function ensureAuthenticated(options = {}) {
 
 async function safeFetch(url, options = {}) {
   const mergedHeaders = { ...(options?.headers || {}) };
-  const body = options?.body;
-  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+  const requestBody = options?.body;
+  const isFormData = typeof FormData !== 'undefined' && requestBody instanceof FormData;
   const hasContentType = Object.keys(mergedHeaders).some((key) => key.toLowerCase() === 'content-type');
   if (!hasContentType && !isFormData) {
     mergedHeaders['Content-Type'] = 'application/json';
@@ -210,17 +331,17 @@ async function safeFetch(url, options = {}) {
   const response = await fetch(url, { ...options, headers: mergedHeaders });
   const contentType = response.headers.get('content-type') || '';
   const isJson = contentType.includes('application/json');
-  const body = isJson ? await response.json() : await response.text();
+  const responseBody = isJson ? await response.json() : await response.text();
 
   if (!response.ok) {
     const message =
-      typeof body === 'string'
-        ? body
-        : body?.error || (body ? JSON.stringify(body) : 'リクエストに失敗しました');
+      typeof responseBody === 'string'
+        ? responseBody
+        : responseBody?.error || (responseBody ? JSON.stringify(responseBody) : 'リクエストに失敗しました');
     throw new Error(message);
   }
 
-  return body;
+  return responseBody;
 }
 
 function updateSupabaseClientFromState() {
@@ -384,12 +505,21 @@ async function syncSupabaseSessionFromClient(options = {}) {
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init, { once: true });
+  document.addEventListener(
+    'DOMContentLoaded',
+    () => {
+      init().catch((error) => console.error(error));
+    },
+    { once: true }
+  );
 } else {
-  init();
+  queueMicrotask(() => {
+    init().catch((error) => console.error(error));
+  });
 }
 
 async function init() {
+  await waitForDom();
   await loadAuth();
   await syncSupabaseSessionFromClient({ initial: true });
   if (authState.authenticated) {
@@ -623,17 +753,15 @@ function applyGuestUi(isGuest) {
         element.classList?.add('is-disabled');
       } else {
         element.disabled = false;
-        element.setAttribute('aria-disabled', 'true');
+        element.dataset.authRequired = '1';
         element.classList?.add('requires-auth');
       }
     } else if (element.dataset.guestDisabled) {
       const persist = element.dataset.guestDisabled === 'persist';
       delete element.dataset.guestDisabled;
 
-      if (!disableElement && persist) {
-        element.setAttribute('aria-disabled', 'true');
-      } else {
-        element.removeAttribute('aria-disabled');
+      if (!disableElement) {
+        delete element.dataset.authRequired;
       }
 
       if (!persist) {
@@ -646,7 +774,7 @@ function applyGuestUi(isGuest) {
       }
     } else {
       if (!disableElement) {
-        element.removeAttribute('aria-disabled');
+        delete element.dataset.authRequired;
         element.classList?.remove('requires-auth');
       }
 
