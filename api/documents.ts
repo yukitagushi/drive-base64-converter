@@ -7,6 +7,9 @@ import {
 import { getSupabaseClientWithToken } from '../lib/supabaseClient';
 import { GeminiApiError, uploadFileToStore } from '../lib/gemini';
 
+const DEFAULT_UPLOAD_BUCKET = 'gemini-upload-cache';
+const MAX_UPLOAD_BYTES = 60 * 1024 * 1024; // 60MB safety cap for server-side processing
+
 function applyCors(req: VercelRequest, res: VercelResponse) {
   const origin = (req.headers.origin as string | undefined) || '';
   if (origin) {
@@ -150,6 +153,19 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  const contentTypeHeader = String(
+    (req.headers['content-type'] || req.headers['Content-Type'] || '') as string
+  ).toLowerCase();
+
+  if (contentTypeHeader.includes('application/json')) {
+    await handleJsonUpload(req, res, {
+      supabase,
+      admin,
+      staff,
+    });
+    return;
+  }
+
   let parsed: MultipartResult;
   try {
     parsed = await parseMultipartForm(req);
@@ -176,52 +192,20 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  let storeRow = null;
-  let storeError = null;
-  if (fileStoreId) {
-    const { data, error } = await supabase
-      .from('file_stores')
-      .select('id, gemini_store_name, organization_id, office_id')
-      .eq('id', fileStoreId)
-      .maybeSingle();
-    storeRow = data;
-    storeError = error;
-  } else if (fileStoreNameField) {
-    const { data, error } = await supabase
-      .from('file_stores')
-      .select('id, gemini_store_name, organization_id, office_id')
-      .eq('gemini_store_name', fileStoreNameField)
-      .maybeSingle();
-    storeRow = data;
-    storeError = error;
-    if (data?.id) {
-      fileStoreId = data.id;
-    }
-  }
-
-  if (storeError) {
-    throw new Error(storeError.message);
-  }
-
-  if (!storeRow) {
-    const access = await classifyStoreAccess(admin, fileStoreId, staff.officeId || null);
-    if (access === 'forbidden') {
-      respond(res, 403, { error: 'このストアにはアクセスできません。' });
-      return;
-    }
-    respond(res, 404, { error: '指定したストアが見つかりません。' });
+  const resolvedStore = await resolveStoreForUpload({
+    supabase,
+    admin,
+    staff,
+    res,
+    fileStoreId,
+    fileStoreName: fileStoreNameField,
+  });
+  if (!resolvedStore) {
     return;
   }
 
-  if (fileStoreNameField && storeRow.gemini_store_name !== fileStoreNameField) {
-    respond(res, 400, { error: '送信された fileStoreName が一致しません。' });
-    return;
-  }
-
-  if (storeRow.office_id !== staff.officeId) {
-    respond(res, 403, { error: 'このストアにはアクセスできません。' });
-    return;
-  }
+  fileStoreId = resolvedStore.storeId;
+  const storeRow = resolvedStore.storeRow;
 
   const uploadResult = await uploadFileToStore({
     storeName: storeRow.gemini_store_name,
@@ -266,6 +250,245 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
     },
     gemini: uploadResult,
   });
+}
+
+interface JsonUploadPayload {
+  fileStoreId?: string;
+  file_store_id?: string;
+  fileStoreName?: string;
+  file_store_name?: string;
+  geminiStoreName?: string;
+  storageBucket?: string;
+  bucket?: string;
+  storagePath?: string;
+  path?: string;
+  displayName?: string;
+  filename?: string;
+  memo?: string;
+  description?: string;
+  mimeType?: string;
+  contentType?: string;
+  sizeBytes?: number;
+}
+
+async function handleJsonUpload(
+  req: VercelRequest,
+  res: VercelResponse,
+  context: {
+    supabase: ReturnType<typeof getSupabaseClientWithToken>;
+    admin: ReturnType<typeof getSupabaseAdmin>;
+    staff: Awaited<ReturnType<typeof resolveStaffForRequest>>;
+  }
+) {
+  const rawBuffer = await readRequestBody(req);
+  const rawText = rawBuffer.toString('utf8').trim();
+
+  if (!rawText) {
+    respond(res, 400, { error: 'リクエスト本文が空です。' });
+    return;
+  }
+
+  let payload: JsonUploadPayload;
+  try {
+    payload = JSON.parse(rawText);
+  } catch (error: any) {
+    respond(res, 400, { error: 'JSON の解析に失敗しました。' });
+    return;
+  }
+
+  const fileStoreId = payload.fileStoreId || payload.file_store_id || '';
+  const fileStoreName = payload.fileStoreName || payload.file_store_name || payload.geminiStoreName || '';
+
+  if (!fileStoreId && !fileStoreName) {
+    respond(res, 400, { error: 'fileStoreId または fileStoreName を指定してください。' });
+    return;
+  }
+
+  const storageBucket = payload.storageBucket || payload.bucket || DEFAULT_UPLOAD_BUCKET;
+  const storagePath = payload.storagePath || payload.path || '';
+
+  if (!storageBucket || !storagePath) {
+    respond(res, 400, { error: 'storageBucket と storagePath を指定してください。' });
+    return;
+  }
+
+  const resolvedStore = await resolveStoreForUpload({
+    supabase: context.supabase,
+    admin: context.admin,
+    staff: context.staff,
+    res,
+    fileStoreId,
+    fileStoreName,
+  });
+
+  if (!resolvedStore) {
+    return;
+  }
+
+  const storeRow = resolvedStore.storeRow;
+  const bucket = storageBucket;
+  const path = storagePath;
+
+  const download = await context.admin.storage.from(bucket).download(path);
+  if (download.error) {
+    respond(res, 400, { error: download.error.message || 'Supabase ストレージからの取得に失敗しました。' });
+    return;
+  }
+
+  const downloadData = download.data;
+  if (!downloadData) {
+    respond(res, 400, { error: 'アップロードされたファイルを取得できませんでした。' });
+    return;
+  }
+
+  const arrayBuffer = await downloadData.arrayBuffer();
+  const fileBuffer = Buffer.from(arrayBuffer);
+
+  if (!fileBuffer.length) {
+    respond(res, 400, { error: 'アップロードされたファイルに内容がありません。' });
+    return;
+  }
+
+  if (fileBuffer.length > MAX_UPLOAD_BYTES) {
+    respond(res, 413, { error: 'アップロードされたファイルが大きすぎます。' });
+    return;
+  }
+
+  const memo = payload.memo || payload.description || '';
+  const displayName = payload.displayName || payload.filename || 'document';
+  const mimeType = payload.mimeType || payload.contentType || 'application/octet-stream';
+
+  const uploadResult = await uploadFileToStore({
+    storeName: storeRow.gemini_store_name,
+    fileBuffer,
+    mimeType,
+    displayName,
+    description: memo,
+  });
+
+  const insertPayload = {
+    file_store_id: storeRow.id,
+    gemini_file_name: uploadResult.geminiFileName,
+    display_name: uploadResult.displayName || displayName,
+    description: memo || null,
+    size_bytes: uploadResult.sizeBytes || payload.sizeBytes || fileBuffer.length,
+    mime_type: uploadResult.mimeType || mimeType,
+    uploaded_by: context.staff.id,
+  };
+
+  const { data, error } = await context.supabase
+    .from('file_store_files')
+    .insert(insertPayload)
+    .select(
+      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at'
+    )
+    .single();
+
+  if (error) {
+    console.error('Supabase file insert error:', error.message);
+    throw new Error(error.message);
+  }
+
+  try {
+    await context.admin.storage.from(bucket).remove([path]);
+  } catch (cleanupError: any) {
+    console.warn('Failed to clean up staged upload:', cleanupError?.message || cleanupError);
+  }
+
+  res.status(201).json({
+    item: {
+      id: data.id,
+      fileStoreId: data.file_store_id,
+      geminiFileName: data.gemini_file_name,
+      displayName: data.display_name,
+      description: data.description,
+      sizeBytes: data.size_bytes,
+      mimeType: data.mime_type,
+      uploadedBy: data.uploaded_by,
+      uploadedAt: data.uploaded_at,
+    },
+    gemini: uploadResult,
+  });
+}
+
+interface ResolveStoreParams {
+  supabase: ReturnType<typeof getSupabaseClientWithToken>;
+  admin: ReturnType<typeof getSupabaseAdmin>;
+  staff: Awaited<ReturnType<typeof resolveStaffForRequest>>;
+  res: VercelResponse;
+  fileStoreId?: string | null;
+  fileStoreName?: string | null;
+}
+
+interface ResolvedStore {
+  storeId: string;
+  storeRow: {
+    id: string;
+    gemini_store_name: string;
+    organization_id: string | null;
+    office_id: string | null;
+  };
+}
+
+async function resolveStoreForUpload(params: ResolveStoreParams): Promise<ResolvedStore | null> {
+  const { supabase, admin, staff, res } = params;
+  let { fileStoreId = '', fileStoreName = '' } = params;
+
+  fileStoreId = (fileStoreId || '').trim();
+  fileStoreName = (fileStoreName || '').trim();
+
+  let storeRow = null;
+  let storeError = null;
+
+  if (fileStoreId) {
+    const { data, error } = await supabase
+      .from('file_stores')
+      .select('id, gemini_store_name, organization_id, office_id')
+      .eq('id', fileStoreId)
+      .maybeSingle();
+    storeRow = data;
+    storeError = error;
+  } else if (fileStoreName) {
+    const { data, error } = await supabase
+      .from('file_stores')
+      .select('id, gemini_store_name, organization_id, office_id')
+      .eq('gemini_store_name', fileStoreName)
+      .maybeSingle();
+    storeRow = data;
+    storeError = error;
+    if (data?.id) {
+      fileStoreId = data.id;
+    }
+  }
+
+  if (storeError) {
+    throw new Error(storeError.message);
+  }
+
+  if (!storeRow) {
+    const access = await classifyStoreAccess(admin, fileStoreId, staff.officeId || null);
+    if (access === 'forbidden') {
+      respond(res, 403, { error: 'このストアにはアクセスできません。' });
+      return null;
+    }
+    respond(res, 404, { error: '指定したストアが見つかりません。' });
+    return null;
+  }
+
+  if (fileStoreName && storeRow.gemini_store_name !== fileStoreName) {
+    respond(res, 400, { error: '送信された fileStoreName が一致しません。' });
+    return null;
+  }
+
+  if (storeRow.office_id !== staff.officeId) {
+    respond(res, 403, { error: 'このストアにはアクセスできません。' });
+    return null;
+  }
+
+  return {
+    storeId: storeRow.id,
+    storeRow,
+  };
 }
 
 async function parseMultipartForm(req: VercelRequest): Promise<MultipartResult> {

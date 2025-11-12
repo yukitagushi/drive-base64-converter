@@ -138,3 +138,35 @@ create policy "staff insert messages" on chat_messages
         and ct.id = chat_messages.thread_id
     )
   );
+
+alter table storage.objects enable row level security;
+
+create policy "staff access gemini upload bucket" on storage.objects
+  for select using (
+    bucket_id = 'gemini-upload-cache'
+    and exists (
+      select 1
+      from staff_profiles sp
+      where sp.user_id = auth.uid()
+    )
+  );
+
+create policy "staff upload gemini cache" on storage.objects
+  for insert with check (
+    bucket_id = 'gemini-upload-cache'
+    and exists (
+      select 1
+      from staff_profiles sp
+      where sp.user_id = auth.uid()
+    )
+  );
+
+create policy "staff remove gemini cache" on storage.objects
+  for delete using (
+    bucket_id = 'gemini-upload-cache'
+    and exists (
+      select 1
+      from staff_profiles sp
+      where sp.user_id = auth.uid()
+    )
+  );

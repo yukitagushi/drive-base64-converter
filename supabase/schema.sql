@@ -121,3 +121,8 @@ select
     limit 1
   ) as last_message
 from chat_threads t;
+
+-- Ensure the private storage bucket used for Gemini uploads exists
+insert into storage.buckets (id, name, public)
+values ('gemini-upload-cache', 'gemini-upload-cache', false)
+on conflict (id) do nothing;

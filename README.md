@@ -19,6 +19,15 @@ Create an `.env` file (or configure Vercel project variables) with the following
 
 > **Note:** Because the frontend is a static `public/` bundle, browser code cannot read `process.env.*`. The `/api/public-env` endpoint surfaces the public Supabase credentials at runtime, so both `SUPABASE_*` (server) and `NEXT_PUBLIC_SUPABASE_*` (browser) variables should be configured in Vercel.
 
+### Supabase storage bucket
+
+Large files are staged in Supabase Storage before being forwarded to Gemini so that uploads exceeding Vercel's request size limits succeed. Apply the SQL in `supabase/schema.sql` and `supabase/policies.sql` (or run equivalent statements) to provision the private bucket and its policies:
+
+- Bucket ID: `gemini-upload-cache`
+- Policies: staff members can insert/select/delete objects within the bucket using the anon key, while API routes clean up staged objects after Gemini ingestion.
+
+The UI enforces a 60 MB cap per upload to keep server-side processing within the limits of Vercel Node Functions.
+
 ## Demo login
 
 The local fallback (when Supabase credentials are omitted) ships with a demo account:
@@ -60,6 +69,11 @@ curl -sS \
   -F "fileStoreId=<uuid>" \
   -F "memo=demo upload" \
   -F "file=@./sample.pdf"
+curl -sS \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -X POST "https://<your-domain>/api/documents" \
+  -d '{"fileStoreId":"<uuid>","storageBucket":"gemini-upload-cache","storagePath":"office/demo/sample.pdf","displayName":"sample.pdf"}'
 curl -i -X POST "https://<your-domain>/api/auth/login-email" \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","password":"secret"}'

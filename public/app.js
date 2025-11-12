@@ -238,6 +238,9 @@ const sessionState = {
   supabaseConfigured: false,
 };
 
+const SUPABASE_UPLOAD_BUCKET = 'gemini-upload-cache';
+const MAX_UPLOAD_BYTES = 60 * 1024 * 1024; // 60MB safety cap for uploads via Supabase storage
+
 const authState = {
   authenticated: false,
   user: null,
@@ -311,6 +314,17 @@ function normalizeFileRow(row = {}) {
     uploadedAt: item.uploadedAt || item.uploaded_at || null,
     updatedAt: item.updatedAt || item.updated_at || null,
   };
+}
+
+function buildStorageObjectPath(fileName = '') {
+  const office = sessionState.officeId || 'office';
+  const sanitizedName = String(fileName)
+    .normalize('NFKD')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-');
+  const trimmedName = sanitizedName.replace(/-+/g, '-').replace(/^-|-$/g, '') || 'document';
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).slice(2, 10);
+  return `${office}/${timestamp}-${random}-${trimmedName}`;
 }
 
 function ensureAuthenticated(options = {}) {
@@ -537,6 +551,20 @@ function getSupabaseClient(options = {}) {
 
 function hasSupabaseClient() {
   return Boolean(getSupabaseClient({ create: false }));
+}
+
+async function ensureSupabaseClientReady() {
+  if (hasSupabaseClient()) {
+    return getSupabaseClient({ create: false });
+  }
+
+  const configured = await ensureSupabaseConfigFromPublicEnv();
+  if (!configured) {
+    return null;
+  }
+
+  updateSupabaseClientFromState();
+  return getSupabaseClient({ create: false });
 }
 
 function attachSupabaseAuthListener() {
@@ -2110,28 +2138,69 @@ async function onUploadFile(event) {
     return;
   }
 
+  if (file.size > MAX_UPLOAD_BYTES) {
+    uploadFeedback.textContent = 'ファイルサイズが大きすぎます。60MB 未満のファイルを選択してください。';
+    return;
+  }
+
   try {
     submitUploadBtn.disabled = true;
     submitUploadBtn.textContent = 'アップロード中...';
 
-    const formData = new FormData();
-    formData.append('fileStoreId', storeId);
-    formData.append('file', file);
-    formData.append('displayName', file.name);
+    const supabase = await ensureSupabaseClientReady();
+    if (!supabase) {
+      uploadFeedback.textContent = 'Supabase の初期化に失敗しました。時間をおいて再度お試しください。';
+      return;
+    }
+
     const notes = uploadNotesInput.value.trim();
-    if (notes) {
-      formData.append('memo', notes);
-    }
-
     const selectedStore = storeCache.find((entry) => entry.id === storeId) || null;
-    if (selectedStore?.geminiStoreName) {
-      formData.append('fileStoreName', selectedStore.geminiStoreName);
+
+    uploadFeedback.textContent = 'ファイルを準備しています...';
+    const objectPath = buildStorageObjectPath(file.name);
+    let stagedPath = objectPath;
+
+    const { error: uploadError } = await supabase.storage
+      .from(SUPABASE_UPLOAD_BUCKET)
+      .upload(objectPath, file, {
+        upsert: true,
+        contentType: file.type || 'application/octet-stream',
+      });
+
+    if (uploadError) {
+      stagedPath = null;
+      throw new Error(uploadError.message || 'Supabase へのファイル転送に失敗しました。');
     }
 
-    const data = await safeFetch('/api/documents', {
-      method: 'POST',
-      body: formData,
-    });
+    uploadFeedback.textContent = 'Gemini にファイルを登録しています...';
+
+    const payload = {
+      fileStoreId: storeId,
+      storageBucket: SUPABASE_UPLOAD_BUCKET,
+      storagePath: objectPath,
+      displayName: file.name,
+      memo: notes,
+      mimeType: file.type || 'application/octet-stream',
+      sizeBytes: file.size,
+    };
+
+    if (selectedStore?.geminiStoreName) {
+      payload.fileStoreName = selectedStore.geminiStoreName;
+    }
+
+    let data;
+    try {
+      data = await safeFetch('/api/documents', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    } catch (error) {
+      if (stagedPath) {
+        supabase.storage.from(SUPABASE_UPLOAD_BUCKET).remove([stagedPath]).catch(() => {});
+      }
+      throw error;
+    }
+
     if (data?.error) {
       throw new Error(data.error || 'アップロードに失敗しました');
     }
@@ -2147,6 +2216,10 @@ async function onUploadFile(event) {
     } else {
       storeFilesCache.delete(storeId);
     }
+
+    uploadFileInput.value = '';
+    uploadNotesInput.value = '';
+    uploadSummary.textContent = 'ファイルを選択すると詳細が表示されます。';
   } catch (error) {
     console.error(error);
     uploadFeedback.textContent = formatHttpError(error, 'ファイルのアップロードに失敗しました。');
