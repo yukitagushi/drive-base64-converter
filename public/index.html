@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>Gemini File Store Manager</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        padding: 24px;
+        background: #f7f7f9;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        background: #fff;
+        padding: 24px;
+        border-radius: 8px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+      }
+      form {
+        display: grid;
+        gap: 12px;
+        margin-bottom: 20px;
+      }
+      label {
+        display: flex;
+        flex-direction: column;
+        font-weight: 600;
+        gap: 4px;
+      }
+      input, select, button {
+        font: inherit;
+        padding: 8px 12px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+      }
+      button {
+        background: #2f68ff;
+        color: #fff;
+        border: none;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #2553c5;
+      }
+      [data-file-store-status] {
+        min-height: 1.2em;
+        margin-bottom: 16px;
+      }
+      [data-file-store-status][data-state="success"] {
+        color: #0a7d32;
+      }
+      [data-file-store-status][data-state="error"] {
+        color: #d32f2f;
+      }
+      [data-file-store-status][data-state="pending"] {
+        color: #555;
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+      }
+      li {
+        padding: 6px 0;
+        border-bottom: 1px solid #ececec;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Gemini File Search Stores</h1>
+      <form data-file-store-form>
+        <label>
+          表示名
+          <input type="text" data-file-store-display-name required />
+        </label>
+        <label>
+          説明 (任意)
+          <input type="text" data-file-store-description />
+        </label>
+        <button type="submit">作成</button>
+      </form>
+      <p data-file-store-status></p>
+      <section>
+        <h2>登録済みストア</h2>
+        <select data-file-store-select></select>
+        <ul data-file-store-list></ul>
+      </section>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
