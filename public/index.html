@@ -3,210 +3,112 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Gemini Lounge</title>
+    <title>Gemini File Search Manager</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <header class="app-header">
-      <div class="app-brand">
-        <span class="app-logo" aria-hidden="true">✦</span>
-        <div>
-          <p class="app-title">Gemini Lounge</p>
-          <p class="app-subtitle">File Search &amp; Conversations</p>
-        </div>
-      </div>
-      <form id="auth-form" class="auth-form" autocomplete="off">
-        <label class="auth-field">
-          <span>Bearer Token</span>
-          <input
-            id="auth-token"
-            name="authToken"
-            type="password"
-            placeholder="sk-..."
-            autocomplete="off"
-            aria-describedby="auth-hint"
-          />
-        </label>
-        <label class="auth-field">
-          <span>ワークスペース</span>
-          <input
-            id="auth-office"
-            name="office"
-            type="text"
-            placeholder="tokyo"
-            autocomplete="off"
-          />
-        </label>
-        <button type="submit" class="auth-save">接続</button>
-        <p id="auth-hint" class="auth-hint">Bearer トークンとワークスペース名はブラウザにのみ保存されます。</p>
-      </form>
+      <h1>Gemini File Search Manager</h1>
+      <p>Gemini File Search ストアの作成とドキュメントアップロードを管理します。</p>
     </header>
+    <main class="container">
+      <section class="panel">
+        <h2>認証設定</h2>
+        <form id="auth-form" autocomplete="off" class="form-grid">
+          <label>
+            <span>Bearer Token</span>
+            <input id="auth-token" name="authToken" type="password" placeholder="sk-..." autocomplete="off" />
+          </label>
+          <label>
+            <span>ワークスペース</span>
+            <input id="auth-office" name="office" type="text" placeholder="tokyo" autocomplete="off" />
+          </label>
+          <button type="submit">保存</button>
+        </form>
+        <p id="auth-status" class="status" data-state="idle">未接続</p>
+      </section>
 
-    <main class="layout">
-      <aside class="sidebar">
-        <section class="sidebar-section">
-          <h2>スレッド</h2>
-          <ul class="thread-list" aria-live="polite">
-            <li class="thread-item is-active">
-              <span class="thread-title">メインチャンネル</span>
-              <span class="thread-meta">常時オンライン</span>
-            </li>
-            <li class="thread-item">
-              <span class="thread-title">リサーチログ</span>
-              <span class="thread-meta">File Search 連携</span>
-            </li>
-            <li class="thread-item">
-              <span class="thread-title">アナウンス</span>
-              <span class="thread-meta">最新リリース</span>
-            </li>
-          </ul>
-        </section>
-        <section class="sidebar-section">
-          <h2>File Search</h2>
-          <p class="sidebar-description">
-            ストアとアップロードを管理し、Gemini 会話から参照できるようにします。
-          </p>
-          <button id="open-store-dialog" type="button" class="sidebar-action">新しいストアを作成</button>
-          <button id="refresh-stores" type="button" class="sidebar-action" data-variant="ghost">ストアを再読込</button>
-        </section>
-      </aside>
+      <section class="panel">
+        <h2>File Search ストアの作成</h2>
+        <form id="store-form" class="form-grid">
+          <label>
+            <span>表示名</span>
+            <input id="store-display-name" name="displayName" type="text" required />
+          </label>
+          <label>
+            <span>説明 (任意)</span>
+            <input id="store-description" name="description" type="text" />
+          </label>
+          <button type="submit">ストアを作成</button>
+        </form>
+        <p id="store-status" class="status"></p>
+      </section>
 
-      <section class="workspace">
-        <header class="workspace-header">
+      <section class="panel">
+        <div class="panel-header">
+          <h2>登録済みストア</h2>
+          <button id="refresh-stores" type="button">再読込</button>
+        </div>
+        <div class="form-grid">
+          <label>
+            <span>ストア選択</span>
+            <select id="store-select"></select>
+          </label>
+          <label>
+            <span>アップロード用ストア</span>
+            <select id="upload-store-select"></select>
+          </label>
+        </div>
+        <div class="store-layout">
           <div>
-            <h1>Gemini Lounge ダッシュボード</h1>
-            <p class="workspace-lead">File Search を使ったドキュメント管理と会話のハブ</p>
+            <h3>ストア一覧</h3>
+            <ul id="store-list" class="store-list" aria-live="polite"></ul>
           </div>
-          <div class="workspace-actions">
-            <span class="status-indicator" id="connection-status" aria-live="polite">未接続</span>
-            <button id="toggle-theme" type="button" class="icon-button" aria-label="テーマ切り替え">
-              <span aria-hidden="true">🌗</span>
-            </button>
-          </div>
-        </header>
-
-        <section class="card" id="file-store-card">
-          <header class="card-header">
-            <div>
-              <h2>File Search ストア</h2>
-              <p>Gemini File Search のインデックスを作成して管理します。</p>
-            </div>
-            <div class="card-actions">
-              <button id="card-open-store-dialog" type="button">ストアを作成</button>
-              <button id="card-refresh-stores" type="button" data-variant="ghost">再読込</button>
-            </div>
-          </header>
-          <div class="card-body">
-            <p id="store-status" class="status-text" aria-live="polite"></p>
-            <div class="store-grid">
-              <div class="store-list-panel">
-                <label class="field">
-                  <span>利用可能なストア</span>
-                  <select id="store-select"></select>
-                </label>
-                <ul id="store-list" class="store-list" aria-live="polite"></ul>
+          <div>
+            <h3>詳細</h3>
+            <dl class="store-details">
+              <div>
+                <dt>表示名</dt>
+                <dd id="detail-display-name">—</dd>
               </div>
-              <div class="store-meta-panel">
-                <h3>選択中のストア</h3>
-                <dl class="store-meta">
-                  <div>
-                    <dt>表示名</dt>
-                    <dd id="meta-display-name">—</dd>
-                  </div>
-                  <div>
-                    <dt>Gemini 名</dt>
-                    <dd id="meta-gemini-name">—</dd>
-                  </div>
-                  <div>
-                    <dt>説明</dt>
-                    <dd id="meta-description">—</dd>
-                  </div>
-                  <div>
-                    <dt>作成日時</dt>
-                    <dd id="meta-created-at">—</dd>
-                  </div>
-                </dl>
+              <div>
+                <dt>Gemini 名</dt>
+                <dd id="detail-gemini-name">—</dd>
               </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="card" id="upload-card">
-          <header class="card-header">
-            <div>
-              <h2>ドキュメントのアップロード</h2>
-              <p>選択した File Search ストアへファイルを送信します。</p>
-            </div>
-          </header>
-          <div class="card-body">
-            <form id="upload-form" class="upload-form" enctype="multipart/form-data">
-              <label class="field">
-                <span>アップロード先ストア</span>
-                <select id="upload-store-select" name="fileSearchStoreName"></select>
-              </label>
-              <label class="field">
-                <span>ファイル</span>
-                <input id="upload-file" name="file" type="file" required />
-              </label>
-              <label class="field">
-                <span>メモ (任意)</span>
-                <input id="upload-memo" name="memo" type="text" placeholder="用途メモ" />
-              </label>
-              <div class="form-actions">
-                <button type="submit">アップロード</button>
-                <button type="reset" data-variant="ghost">リセット</button>
+              <div>
+                <dt>説明</dt>
+                <dd id="detail-description">—</dd>
               </div>
-              <p id="upload-status" class="status-text" aria-live="polite"></p>
-            </form>
+              <div>
+                <dt>作成日時</dt>
+                <dd id="detail-created-at">—</dd>
+              </div>
+            </dl>
           </div>
-        </section>
+        </div>
+      </section>
 
-        <section class="card" id="activity-card">
-          <header class="card-header">
-            <div>
-              <h2>最近のアクティビティ</h2>
-              <p>作成・アップロードの履歴を確認できます。</p>
-            </div>
-          </header>
-          <div class="card-body">
-            <ul id="activity-log" class="activity-log" aria-live="polite"></ul>
-          </div>
-        </section>
+      <section class="panel">
+        <h2>ドキュメントのアップロード</h2>
+        <form id="upload-form" class="form-grid" enctype="multipart/form-data">
+          <label>
+            <span>ファイル</span>
+            <input id="upload-file" name="file" type="file" required />
+          </label>
+          <label>
+            <span>メモ (任意)</span>
+            <input id="upload-memo" name="memo" type="text" placeholder="用途メモ" />
+          </label>
+          <button type="submit">アップロード</button>
+        </form>
+        <p id="upload-status" class="status"></p>
+      </section>
+
+      <section class="panel">
+        <h2>アクティビティログ</h2>
+        <ul id="activity-log" class="activity-log" aria-live="polite"></ul>
       </section>
     </main>
-
-    <dialog id="store-dialog" class="store-dialog">
-      <form id="store-form" method="dialog">
-        <header class="dialog-header">
-          <h2>新しい File Search ストア</h2>
-          <button type="button" class="icon-button" data-dismiss>
-            <span aria-hidden="true">✕</span>
-            <span class="sr-only">閉じる</span>
-          </button>
-        </header>
-        <div class="dialog-body">
-          <label class="field">
-            <span>表示名</span>
-            <input id="store-display-name" name="displayName" type="text" required placeholder="プロジェクト名" />
-          </label>
-          <label class="field">
-            <span>説明 (任意)</span>
-            <input id="store-description" name="description" type="text" placeholder="概要" />
-          </label>
-        </div>
-        <footer class="dialog-footer">
-          <button type="reset" data-dismiss data-variant="ghost">キャンセル</button>
-          <button type="submit">作成する</button>
-        </footer>
-      </form>
-    </dialog>
-
-    <template id="store-item-template">
-      <li class="store-item">
-        <div class="store-item-title"></div>
-        <div class="store-item-meta"></div>
-      </li>
-    </template>
 
     <script type="module" src="/app.js"></script>
   </body>
