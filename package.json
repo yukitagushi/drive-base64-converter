@@ -8,5 +8,10 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@vercel/node": "^3.2.2",
+    "typescript": "^5.4.5"
   }
 }

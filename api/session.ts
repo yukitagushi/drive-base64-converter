@@ -1,4 +1,4 @@
-import type { NextApiRequest, NextApiResponse } from 'next';
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
 import {
   buildGuestSessionPayload,
@@ -8,7 +8,7 @@ import {
   resolveUserFromToken,
 } from '../lib/api-auth';
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
     res.status(405).json({ error: 'Method Not Allowed' });

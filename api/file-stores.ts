@@ -1,3 +1,4 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { randomUUID } from 'crypto';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
 import { buildSessionPayload, resolveStaffForRequest } from '../lib/api-auth';
@@ -9,7 +10,7 @@ function firstValue(value: string | string[] | undefined): string | undefined {
   return value;
 }
 
-export default async function handler(req: any, res: any) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method === 'GET') {
       await handleGet(req, res);
@@ -29,12 +30,13 @@ export default async function handler(req: any, res: any) {
   }
 }
 
-async function handleGet(req: any, res: any) {
+async function handleGet(req: VercelRequest, res: VercelResponse) {
   const admin = getSupabaseAdmin();
   const staff = await resolveStaffForRequest(admin, req);
-  const officeId = firstValue(req.query?.officeId) || staff?.officeId || null;
-  const organizationId = firstValue(req.query?.organizationId) || staff?.organizationId || null;
-  const createdBy = firstValue(req.query?.createdBy);
+  const queryParams = req.query as Record<string, string | string[] | undefined>;
+  const officeId = firstValue(queryParams.officeId) || staff?.officeId || null;
+  const organizationId = firstValue(queryParams.organizationId) || staff?.organizationId || null;
+  const createdBy = firstValue(queryParams.createdBy);
 
   let query = admin.from('file_stores').select('*').order('created_at', { ascending: false });
 
@@ -71,9 +73,19 @@ async function handleGet(req: any, res: any) {
   });
 }
 
-async function handlePost(req: any, res: any) {
+async function handlePost(req: VercelRequest, res: VercelResponse) {
   const admin = getSupabaseAdmin();
-  const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
+  let body: any = {};
+  try {
+    if (typeof req.body === 'string') {
+      body = req.body ? JSON.parse(req.body) : {};
+    } else if (req.body && typeof req.body === 'object') {
+      body = req.body;
+    }
+  } catch (error: any) {
+    res.status(400).json({ error: 'JSON 形式で送信してください。' });
+    return;
+  }
   const staff = await resolveStaffForRequest(admin, req);
 
   const officeId = body.officeId || staff?.officeId;

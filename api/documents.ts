@@ -1,3 +1,4 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
 import { resolveStaffForRequest } from '../lib/api-auth';
 
@@ -8,7 +9,7 @@ function firstValue(value: string | string[] | undefined): string | undefined {
   return value;
 }
 
-export default async function handler(req: any, res: any) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method === 'GET') {
       await handleGet(req, res);
@@ -28,9 +29,10 @@ export default async function handler(req: any, res: any) {
   }
 }
 
-async function handleGet(req: any, res: any) {
+async function handleGet(req: VercelRequest, res: VercelResponse) {
   const admin = getSupabaseAdmin();
-  const fileStoreId = firstValue(req.query?.fileStoreId);
+  const query = req.query as Record<string, string | string[] | undefined>;
+  const fileStoreId = firstValue(query.fileStoreId);
 
   if (!fileStoreId) {
     res.status(400).json({ error: 'fileStoreId は必須です。' });
@@ -50,9 +52,19 @@ async function handleGet(req: any, res: any) {
   res.status(200).json({ items: data ?? [] });
 }
 
-async function handlePost(req: any, res: any) {
+async function handlePost(req: VercelRequest, res: VercelResponse) {
   const admin = getSupabaseAdmin();
-  const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
+  let body: any = {};
+  try {
+    if (typeof req.body === 'string') {
+      body = req.body ? JSON.parse(req.body) : {};
+    } else if (req.body && typeof req.body === 'object') {
+      body = req.body;
+    }
+  } catch (error: any) {
+    res.status(400).json({ error: 'JSON 形式で送信してください。' });
+    return;
+  }
   const staff = await resolveStaffForRequest(admin, req);
 
   const fileStoreId = body.fileStoreId;

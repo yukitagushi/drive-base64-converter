@@ -1,4 +1,4 @@
-import type { NextApiRequest } from 'next';
+import type { VercelRequest } from '@vercel/node';
 
 interface StaffContext {
   id: string;
@@ -127,7 +127,7 @@ export function buildGuestSessionPayload(): SessionPayload {
   };
 }
 
-export function getSupabaseBearerToken(req: NextApiRequest): string | null {
+export function getSupabaseBearerToken(req: VercelRequest): string | null {
   const header = (req.headers['authorization'] || req.headers['Authorization']) as string | undefined;
   if (header && typeof header === 'string') {
     const trimmed = header.trim();
@@ -144,8 +144,13 @@ export function getSupabaseBearerToken(req: NextApiRequest): string | null {
     }
   }
 
-  if (req.query && typeof req.query.accessToken === 'string') {
-    return req.query.accessToken.trim() || null;
+  const query = req.query as Record<string, string | string[] | undefined>;
+  const queryToken = query.accessToken;
+  if (typeof queryToken === 'string') {
+    return queryToken.trim() || null;
+  }
+  if (Array.isArray(queryToken) && queryToken.length > 0) {
+    return (queryToken[0] || '').trim() || null;
   }
 
   return null;
@@ -320,7 +325,7 @@ export async function buildSessionPayload(admin: any, staff: StaffContext | null
   };
 }
 
-export async function resolveStaffForRequest(admin: any, req: NextApiRequest): Promise<StaffContext | null> {
+export async function resolveStaffForRequest(admin: any, req: VercelRequest): Promise<StaffContext | null> {
   const token = getSupabaseBearerToken(req);
   if (!token) {
     return null;

@@ -29,3 +29,21 @@ When running against Supabase, create an auth user with the same credentials and
 4. **Server credentials** – Keep `SUPABASE_SERVICE_ROLE_KEY` restricted to server-side execution only (API routes / local server) and never expose it in the browser.
 
 After deploying, confirm that clicking **Google でログイン** navigates to `/auth/v1/authorize`, and that returning to the app yields a valid `supabase.auth.getUser()` response.
+
+## API verification
+
+Use the following `curl` commands (adjusting domain and IDs) to verify the serverless functions respond with JSON during deployments:
+
+```bash
+curl -sS https://<your-domain>/api/state
+curl -sS "https://<your-domain>/api/file-stores?officeId=<uuid>"
+curl -sS -X POST "https://<your-domain>/api/file-stores" \
+  -H "Content-Type: application/json" \
+  -d '{"officeId":"<uuid>","displayName":"Example Store","description":"demo"}'
+curl -sS "https://<your-domain>/api/documents?fileStoreId=<uuid>"
+curl -sS -X POST "https://<your-domain>/api/documents" \
+  -H "Content-Type: application/json" \
+  -d '{"fileStoreId":"<uuid>","geminiFileName":"files/demo","displayName":"Spec.pdf","sizeBytes":12345,"mimeType":"application/pdf"}'
+```
+
+Each endpoint should return `application/json` responses for both success and error cases (e.g., 4xx/5xx).
