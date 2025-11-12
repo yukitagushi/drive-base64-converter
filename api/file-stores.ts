@@ -64,7 +64,6 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const supabase = getSupabaseClientWithToken(token);
   const admin = getSupabaseAdmin();
   const staff = await resolveStaffForRequest(admin, req);
   if (!staff) {
@@ -72,9 +71,17 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  if (!staff.officeId) {
+    respond(res, 403, { error: '事業所情報が見つかりません。' });
+    return;
+  }
+
+  const supabase = getSupabaseClientWithToken(token);
+
   const { data, error } = await supabase
     .from('file_stores')
     .select('id, organization_id, office_id, gemini_store_name, display_name, description, created_by, created_at')
+    .eq('office_id', staff.officeId)
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -93,7 +100,8 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
   if (storeIds.length) {
     const { data: files, error: fileError } = await supabase
       .from('file_store_files')
-      .select('file_store_id, size_bytes');
+      .select('file_store_id, size_bytes')
+      .in('file_store_id', storeIds);
     if (fileError) {
       console.error('file-stores metrics error:', fileError.message);
     } else {
