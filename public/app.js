@@ -1,35 +1,104 @@
-const STORAGE_KEY = 'gemini-file-search-auth';
+const template = document.getElementById('store-item-template');
+const storeListEl = document.getElementById('store-list');
+const storeSelector = document.getElementById('store-selector');
+const uploadSelect = document.getElementById('upload-store');
+const storesStatusEl = document.getElementById('stores-status');
+const createStatusEl = document.getElementById('create-status');
+const uploadStatusEl = document.getElementById('upload-status');
+const detailDisplayEl = document.getElementById('detail-display-name');
+const detailGeminiEl = document.getElementById('detail-gemini-name');
+const detailDescriptionEl = document.getElementById('detail-description');
+const detailCreatedEl = document.getElementById('detail-created-at');
+const activityLog = document.getElementById('activity-log');
+const heroCountEl = document.getElementById('metric-store-count');
+const heroRefreshEl = document.getElementById('metric-last-refresh');
+const authIndicator = document.getElementById('auth-indicator');
+const sessionStatusEl = document.getElementById('session-status');
+const sessionTokenEl = document.getElementById('session-token-state');
+const loginButton = document.getElementById('login-button');
+const logoutButton = document.getElementById('logout-button');
+const manualAuthSection = document.getElementById('manual-auth');
+const manualAuthForm = document.getElementById('manual-auth-form');
+const manualTokenInput = document.getElementById('manual-token');
+const manualClearButton = document.getElementById('manual-clear');
+const storeForm = document.getElementById('store-form');
+const openCreateDialogButton = document.getElementById('open-create-dialog');
+const cancelCreateButton = document.getElementById('cancel-create');
+const createDialog = document.getElementById('create-store');
+const refreshButton = document.getElementById('refresh-stores');
+const uploadForm = document.getElementById('upload-form');
+const sidebarYear = document.getElementById('sidebar-year');
+const sessionWorkspaceEl = document.getElementById('session-workspace');
+const uploadFileInput = document.getElementById('upload-file');
 
-const state = {
-  token: '',
-  office: '',
-  stores: [],
-  selectedStoreId: ''
-};
+const MANUAL_TOKEN_STORAGE_KEY = 'gemini-manual-token';
 
-function loadCredentials() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { token: '', office: '' };
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') {
-      return {
-        token: typeof parsed.token === 'string' ? parsed.token : '',
-        office: typeof parsed.office === 'string' ? parsed.office : ''
-      };
-    }
-  } catch (error) {
-    console.warn('[ui] failed to read credentials', error);
+class HttpError extends Error {
+  constructor(message, status, body) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+    this.body = body;
   }
-  return { token: '', office: '' };
 }
 
-function persistCredentials(next) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch (error) {
-    console.warn('[ui] failed to persist credentials', error);
+const state = {
+  stores: [],
+  selectedStoreId: '',
+  manualToken: '',
+  lastRefresh: null,
+  supabase: null,
+  supabaseProvider: 'google'
+};
+
+const env = window.__ENV__ || {};
+
+async function initSupabase() {
+  const url = env.SUPABASE_URL || '';
+  const anonKey = env.SUPABASE_ANON_KEY || '';
+  state.supabaseProvider = env.SUPABASE_PROVIDER || 'google';
+  if (!url || !anonKey) {
+    return null;
   }
+  try {
+    const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2.39.5');
+    return createClient(url, anonKey, {
+      auth: { persistSession: true }
+    });
+  } catch (error) {
+    console.warn('[ui] failed to load Supabase client', error);
+    return null;
+  }
+}
+
+function loadManualToken() {
+  try {
+    const raw = localStorage.getItem(MANUAL_TOKEN_STORAGE_KEY);
+    if (!raw) return '';
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'string' ? parsed : '';
+  } catch (error) {
+    console.warn('[ui] failed to parse manual token', error);
+    return '';
+  }
+}
+
+function persistManualToken(token) {
+  try {
+    if (token) {
+      localStorage.setItem(MANUAL_TOKEN_STORAGE_KEY, JSON.stringify(token));
+    } else {
+      localStorage.removeItem(MANUAL_TOKEN_STORAGE_KEY);
+    }
+  } catch (error) {
+    console.warn('[ui] failed to persist manual token', error);
+  }
+}
+
+let AUTH = { token: null, workspace: null };
+
+function getActiveToken() {
+  return AUTH.token || state.manualToken || null;
 }
 
 function setStatus(element, message, status) {
@@ -42,44 +111,151 @@ function setStatus(element, message, status) {
   }
 }
 
-function updateAuthStatus(message, status) {
-  const el = document.getElementById('auth-status');
-  setStatus(el, message, status);
-}
-
-function pushActivity(message, status = 'info') {
-  const log = document.getElementById('activity-log');
-  if (!log) return;
-  const item = document.createElement('li');
-  item.dataset.status = status;
-  item.textContent = message;
-  log.prepend(item);
-  while (log.children.length > 30) {
-    log.removeChild(log.lastElementChild);
-  }
-}
-
-function updateHeroStoreCount() {
-  const countEl = document.getElementById('hero-store-count');
-  if (!countEl) return;
-  countEl.textContent = `${state.stores.length} 件`;
-}
-
-function summariseError(payload, status) {
-  if (!payload) {
+function summarisePayload(payload, status) {
+  if (!payload || typeof payload !== 'object') {
     return `リクエストに失敗しました (status: ${status}).`;
   }
   const source = payload.source === 'gemini' ? 'Gemini API' : 'API';
   if (typeof payload.error === 'string') {
     return `${source} エラー: ${payload.error}`;
   }
+  if (typeof payload.detail === 'string') {
+    return `${source} エラー: ${payload.detail}`;
+  }
+  if (payload.detail && typeof payload.detail === 'object') {
+    return `${source} エラー: ${JSON.stringify(payload.detail)}`;
+  }
   if (typeof payload.message === 'string') {
     return `${source} エラー: ${payload.message}`;
   }
-  if (payload.error && typeof payload.error.message === 'string') {
-    return `${source} エラー: ${payload.error.message}`;
-  }
   return `${source} エラー (status: ${status}).`;
+}
+
+function summariseError(error) {
+  if (error instanceof HttpError) {
+    const body = error.body;
+    if (body && typeof body === 'object') {
+      return summarisePayload(body, error.status || 500);
+    }
+    if (typeof body === 'string' && body.trim()) {
+      return body.trim();
+    }
+    return `リクエストに失敗しました (status: ${error.status}).`;
+  }
+  return error instanceof Error ? error.message : '不明なエラーが発生しました。';
+}
+
+function pushActivity(message, status = 'info') {
+  if (!activityLog) return;
+  const item = document.createElement('li');
+  item.dataset.status = status;
+  item.textContent = message;
+  activityLog.prepend(item);
+  while (activityLog.children.length > 40) {
+    activityLog.removeChild(activityLog.lastElementChild);
+  }
+}
+
+function updateStoreDetails() {
+  const target = state.stores.find((entry) => entry.id === state.selectedStoreId) || null;
+  detailDisplayEl.textContent = target?.displayName || '—';
+  detailGeminiEl.textContent = target?.geminiName || '—';
+  detailDescriptionEl.textContent = target?.description || '—';
+  detailCreatedEl.textContent = target?.createdAt || '—';
+}
+
+function renderStoreOptions() {
+  if (storeSelector) {
+    storeSelector.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '選択してください';
+    storeSelector.appendChild(placeholder);
+    for (const store of state.stores) {
+      const option = document.createElement('option');
+      option.value = store.id;
+      option.textContent = store.displayName || store.id;
+      option.dataset.geminiName = store.geminiName;
+      if (store.id === state.selectedStoreId) {
+        option.selected = true;
+      }
+      storeSelector.appendChild(option);
+    }
+    storeSelector.disabled = state.stores.length === 0;
+  }
+
+  if (uploadSelect) {
+    uploadSelect.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '選択してください';
+    uploadSelect.appendChild(placeholder);
+    for (const store of state.stores) {
+      const option = document.createElement('option');
+      option.value = store.geminiName;
+      option.dataset.storeId = store.id;
+      option.textContent = store.displayName || store.id;
+      uploadSelect.appendChild(option);
+    }
+    if (state.selectedStoreId) {
+      const selectedStore = state.stores.find((entry) => entry.id === state.selectedStoreId);
+      if (selectedStore) {
+        uploadSelect.value = selectedStore.geminiName;
+      }
+    }
+    uploadSelect.disabled = state.stores.length === 0;
+  }
+}
+
+function renderStoreList() {
+  if (!storeListEl) return;
+  storeListEl.innerHTML = '';
+  if (state.stores.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'store-item';
+    empty.textContent = 'まだストアが登録されていません。';
+    empty.setAttribute('data-active', 'false');
+    storeListEl.appendChild(empty);
+    return;
+  }
+
+  for (const store of state.stores) {
+    let item;
+    if (template?.content) {
+      const fragment = template.content.cloneNode(true);
+      item = fragment.querySelector('.store-item');
+      if (!item) {
+        item = document.createElement('li');
+        item.className = 'store-item';
+      }
+      const title = fragment.querySelector('.store-item-title');
+      const meta = fragment.querySelector('.store-item-meta');
+      if (title) title.textContent = store.displayName || store.id;
+      if (meta) meta.textContent = store.geminiName;
+      item.dataset.storeId = store.id;
+      item.dataset.active = store.id === state.selectedStoreId ? 'true' : 'false';
+      storeListEl.appendChild(fragment);
+    } else {
+      item = document.createElement('li');
+      item.className = 'store-item';
+      item.dataset.storeId = store.id;
+      item.dataset.active = store.id === state.selectedStoreId ? 'true' : 'false';
+      item.tabIndex = 0;
+      item.setAttribute('role', 'button');
+      item.innerHTML = `
+        <div class="store-item-title">${store.displayName || store.id}</div>
+        <div class="store-item-meta">${store.geminiName}</div>
+      `;
+      storeListEl.appendChild(item);
+    }
+  }
+}
+
+function renderStores() {
+  renderStoreOptions();
+  renderStoreList();
+  updateStoreDetails();
+  heroCountEl.textContent = String(state.stores.length);
 }
 
 function normalizeStore(entry) {
@@ -93,8 +269,8 @@ function normalizeStore(entry) {
   return { id, displayName, description, geminiName, createdAt };
 }
 
-function authFetch(input, init = {}) {
-  const options = { ...init };
+async function authFetch(url, opt = {}) {
+  const options = { ...opt };
   const body = options.body;
   const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
   const headers = new Headers(options.headers || {});
@@ -104,123 +280,36 @@ function authFetch(input, init = {}) {
   if (body && !isFormData && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
-  if (state.token) {
-    headers.set('Authorization', `Bearer ${state.token}`);
+  const token = getActiveToken();
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
   } else {
     headers.delete('Authorization');
-  }
-  if (state.office) {
-    headers.set('X-Office', state.office);
-  } else {
-    headers.delete('X-Office');
   }
   options.headers = headers;
   if (isFormData) {
     options.body = body;
   }
-  return fetch(input, options);
-}
-
-function updateStoreDetails() {
-  const displayEl = document.getElementById('detail-display-name');
-  const geminiEl = document.getElementById('detail-gemini-name');
-  const descriptionEl = document.getElementById('detail-description');
-  const createdEl = document.getElementById('detail-created-at');
-  const target = state.stores.find((entry) => entry.id === state.selectedStoreId) || null;
-  displayEl.textContent = target?.displayName || '—';
-  geminiEl.textContent = target?.geminiName || '—';
-  descriptionEl.textContent = target?.description || '—';
-  createdEl.textContent = target?.createdAt || '—';
-}
-
-function updateStoreList() {
-  const list = document.getElementById('store-list');
-  if (!list) return;
-  list.innerHTML = '';
-  if (state.stores.length === 0) {
-    const empty = document.createElement('li');
-    empty.className = 'empty';
-    empty.textContent = 'まだストアが登録されていません。';
-    list.appendChild(empty);
-    return;
+  const response = await fetch(url, options);
+  const contentType = response.headers.get('content-type') || '';
+  const payload = contentType.includes('application/json')
+    ? await response.json().catch(() => null)
+    : await response.text();
+  if (!response.ok) {
+    throw new HttpError(
+      typeof payload === 'string' && payload.trim()
+        ? payload.trim()
+        : payload?.error || payload?.message || 'Request failed',
+      response.status,
+      payload
+    );
   }
-  for (const store of state.stores) {
-    const item = document.createElement('li');
-    item.dataset.storeId = store.id;
-    if (store.id === state.selectedStoreId) {
-      item.dataset.active = 'true';
-    }
-    item.setAttribute('role', 'button');
-    item.tabIndex = 0;
-    const name = document.createElement('span');
-    name.textContent = store.displayName || store.id;
-    name.className = 'store-item-name';
-    const meta = document.createElement('span');
-    meta.textContent = store.geminiName;
-    meta.className = 'store-item-meta';
-    item.append(name, meta);
-    list.appendChild(item);
-  }
+  return { data: payload, status: response.status, headers: response.headers };
 }
 
-function updateStoreSelects() {
-  const select = document.getElementById('store-select');
-  const uploadSelect = document.getElementById('upload-store-select');
-  const placeholderText = 'ストアを選択';
-
-  if (select) {
-    select.innerHTML = '';
-    const placeholder = document.createElement('option');
-    placeholder.value = '';
-    placeholder.textContent = placeholderText;
-    select.appendChild(placeholder);
-    for (const store of state.stores) {
-      const option = document.createElement('option');
-      option.value = store.id;
-      option.textContent = store.displayName || store.id;
-      option.dataset.geminiName = store.geminiName;
-      if (store.id === state.selectedStoreId) {
-        option.selected = true;
-      }
-      select.appendChild(option);
-    }
-    select.value = state.selectedStoreId || '';
-  }
-
-  if (uploadSelect) {
-    uploadSelect.innerHTML = '';
-    const placeholder = document.createElement('option');
-    placeholder.value = '';
-    placeholder.textContent = placeholderText;
-    uploadSelect.appendChild(placeholder);
-    for (const store of state.stores) {
-      const option = document.createElement('option');
-      option.value = store.id;
-      option.textContent = store.displayName || store.id;
-      option.dataset.geminiName = store.geminiName;
-      if (store.id === state.selectedStoreId) {
-        option.selected = true;
-      }
-      uploadSelect.appendChild(option);
-    }
-    uploadSelect.disabled = state.stores.length === 0;
-    if (state.stores.length > 0) {
-      uploadSelect.value = state.selectedStoreId || state.stores[0].id;
-    }
-  }
-}
-
-function renderStores() {
-  updateStoreSelects();
-  updateStoreList();
-  updateStoreDetails();
-  updateHeroStoreCount();
-}
-
-async function loadStores(showPending = true) {
-  const statusEl = document.getElementById('store-status');
-  if (!state.token) {
-    setStatus(statusEl, 'Bearer トークンを設定してください。', 'error');
+async function fetchStores(showPending = true) {
+  if (!getActiveToken()) {
+    setStatus(storesStatusEl, '認証情報が必要です。ログインしてください。', 'error');
     state.stores = [];
     state.selectedStoreId = '';
     renderStores();
@@ -228,261 +317,369 @@ async function loadStores(showPending = true) {
   }
 
   if (showPending) {
-    setStatus(statusEl, 'ストア一覧を取得しています…', 'pending');
+    setStatus(storesStatusEl, 'ストア一覧を取得しています…', 'pending');
   }
 
   try {
-    const res = await authFetch('/api/file-stores', {
+    const { data } = await authFetch('/api/file-stores', {
       headers: { 'cache-control': 'no-cache' }
     });
-    const payload = await res.json().catch(() => null);
-
-    if (res.status === 401 || res.status === 403) {
-      setStatus(statusEl, '認証情報を確認してください。', 'error');
-      updateAuthStatus('未接続', 'error');
-      state.stores = [];
-      state.selectedStoreId = '';
-      renderStores();
-      return;
-    }
-
-    if (!res.ok) {
-      const message = summariseError(payload, res.status);
-      setStatus(statusEl, message, 'error');
-      return;
-    }
-
-    const stores = Array.isArray(payload?.stores) ? payload.stores : [];
+    const stores = Array.isArray(data?.stores) ? data.stores : [];
     const normalized = stores.map(normalizeStore).filter(Boolean);
     normalized.sort((a, b) => a.displayName.localeCompare(b.displayName, 'ja'));
     state.stores = normalized;
     if (!state.stores.find((entry) => entry.id === state.selectedStoreId)) {
       state.selectedStoreId = state.stores[0]?.id || '';
     }
+    state.lastRefresh = new Date();
+    heroRefreshEl.textContent = state.lastRefresh.toLocaleTimeString();
     renderStores();
     if (state.stores.length === 0) {
-      setStatus(statusEl, 'まだストアがありません。', 'idle');
+      setStatus(storesStatusEl, 'まだストアが登録されていません。', 'info');
     } else {
-      setStatus(statusEl, 'ストア一覧を更新しました。', 'success');
+      setStatus(storesStatusEl, `${state.stores.length} 件のストアを取得しました。`, 'success');
     }
-    pushActivity('ストア一覧を取得しました。', 'info');
+    const debugId = typeof data?.debugId === 'string' ? data.debugId : 'local';
+    pushActivity(`GET /api/file-stores (${debugId})`, 'info');
   } catch (error) {
-    console.error('[ui] failed to load stores', error);
-    setStatus(statusEl, 'ストア一覧の取得に失敗しました。', 'error');
+    console.error('[ui] failed to fetch stores', error);
+    const message = summariseError(error);
+    setStatus(storesStatusEl, message, 'error');
+    pushActivity(`ストア一覧の取得に失敗しました: ${message}`, 'error');
+    if (error instanceof HttpError && (error.status === 401 || error.status === 403)) {
+      AUTH.token = null;
+      updateAuthUI();
+    }
   }
 }
 
-async function createStore(form) {
-  const statusEl = document.getElementById('store-status');
-  const formData = new FormData(form);
+async function handleCreateStore(event) {
+  event.preventDefault();
+  if (!storeForm) return;
+  const formData = new FormData(storeForm);
   const displayName = (formData.get('displayName') || '').toString().trim();
   const description = (formData.get('description') || '').toString().trim();
-
   if (!displayName) {
-    setStatus(statusEl, '表示名を入力してください。', 'error');
+    setStatus(createStatusEl, '表示名を入力してください。', 'error');
     return;
   }
-
-  setStatus(statusEl, 'ストアを作成しています…', 'pending');
-
+  setStatus(createStatusEl, 'ストアを作成しています…', 'pending');
+  const payload = { displayName };
+  if (description) {
+    payload.description = description;
+  }
   try {
-    const body = { displayName };
-    if (description) {
-      body.description = description;
-    }
-    const res = await authFetch('/api/file-stores', {
+    const { data } = await authFetch('/api/file-stores', {
       method: 'POST',
-      body: JSON.stringify(body)
+      body: JSON.stringify(payload)
     });
-    const payload = await res.json().catch(() => null);
-
-    if (res.status === 401 || res.status === 403) {
-      setStatus(statusEl, '認証情報を確認してください。', 'error');
-      updateAuthStatus('未接続', 'error');
-      return;
+    const store = normalizeStore(data?.store);
+    if (store) {
+      state.stores = [store, ...state.stores.filter((entry) => entry.id !== store.id)];
+      state.selectedStoreId = store.id;
+      renderStores();
     }
-
-    if (res.status === 409) {
-      setStatus(statusEl, '同じ表示名のストアが既に存在します。', 'error');
-      return;
-    }
-
-    if (!res.ok) {
-      const message = summariseError(payload, res.status);
-      setStatus(statusEl, message, 'error');
-      return;
-    }
-
-    setStatus(statusEl, 'ストアを作成しました。', 'success');
-    pushActivity(`ストア「${displayName}」を作成しました。`, 'success');
-    form.reset();
-    await loadStores(false);
+    setStatus(createStatusEl, 'ストアを作成しました。', 'success');
+    pushActivity(`ストア「${displayName}」を作成しました (${data?.debugId || 'local'})`, 'success');
+    storeForm.reset();
+    closeCreateDialog();
+    await fetchStores(false);
   } catch (error) {
     console.error('[ui] failed to create store', error);
-    setStatus(statusEl, 'ストアの作成に失敗しました。', 'error');
+    const message = summariseError(error);
+    if (error instanceof HttpError && error.status === 409) {
+      setStatus(createStatusEl, '同名のストアが既に存在します。', 'error');
+    } else {
+      setStatus(createStatusEl, message, 'error');
+    }
+    pushActivity(`ストアの作成に失敗しました: ${message}`, 'error');
   }
 }
 
-async function uploadDocument(form) {
-  const statusEl = document.getElementById('upload-status');
-  const fileInput = document.getElementById('upload-file');
-  const memoInput = document.getElementById('upload-memo');
-  const storeSelect = document.getElementById('upload-store-select');
-
-  const storeId = storeSelect?.value || '';
-  const store = state.stores.find((entry) => entry.id === storeId) || null;
-  if (!store) {
-    setStatus(statusEl, 'アップロード先のストアを選択してください。', 'error');
+async function handleUpload(event) {
+  event.preventDefault();
+  if (!uploadForm) return;
+  const formData = new FormData(uploadForm);
+  const storeName = formData.get('fileSearchStoreName');
+  if (!storeName || typeof storeName !== 'string' || !storeName.startsWith('fileSearchStores/')) {
+    setStatus(uploadStatusEl, 'アップロード先ストアを選択してください。', 'error');
     return;
   }
-
-  if (!fileInput?.files || fileInput.files.length === 0) {
-    setStatus(statusEl, 'ファイルを選択してください。', 'error');
+  const file = formData.get('file');
+  if (!(file instanceof File) || file.size === 0) {
+    setStatus(uploadStatusEl, 'ファイルを選択してください。', 'error');
     return;
   }
-
-  const formData = new FormData();
-  formData.set('file', fileInput.files[0]);
-  formData.set('fileSearchStoreName', store.geminiName);
-  const memo = memoInput?.value.trim();
-  if (memo) {
-    formData.set('memo', memo);
-  }
-
-  setStatus(statusEl, 'アップロード中…', 'pending');
-
+  setStatus(uploadStatusEl, 'アップロード中です…', 'pending');
   try {
-    const res = await authFetch('/api/documents', {
+    const { data } = await authFetch('/api/documents', {
       method: 'POST',
       body: formData
     });
-    const payload = await res.json().catch(() => null);
-
-    if (res.status === 401 || res.status === 403) {
-      setStatus(statusEl, '認証情報を確認してください。', 'error');
-      updateAuthStatus('未接続', 'error');
-      return;
+    setStatus(uploadStatusEl, 'アップロードが完了しました。', 'success');
+    pushActivity(`「${file.name}」をアップロードしました (${data?.debugId || 'local'})`, 'success');
+    uploadForm.reset();
+    if (state.selectedStoreId) {
+      const selectedStore = state.stores.find((entry) => entry.id === state.selectedStoreId);
+      if (selectedStore) {
+        uploadSelect.value = selectedStore.geminiName;
+      }
     }
-
-    if (!res.ok) {
-      const message = summariseError(payload, res.status);
-      setStatus(statusEl, message, 'error');
-      pushActivity(`アップロードに失敗しました: ${message}`, 'error');
-      return;
-    }
-
-    setStatus(statusEl, 'アップロードが完了しました。', 'success');
-    pushActivity(`「${fileInput.files[0].name}」をアップロードしました。`, 'success');
-    form.reset();
-    renderStores();
   } catch (error) {
     console.error('[ui] failed to upload document', error);
-    setStatus(statusEl, 'アップロードに失敗しました。', 'error');
-    pushActivity('アップロードに失敗しました。', 'error');
+    const message = summariseError(error);
+    setStatus(uploadStatusEl, message, 'error');
+    pushActivity(`アップロードに失敗しました: ${message}`, 'error');
+    if (error instanceof HttpError && (error.status === 401 || error.status === 403)) {
+      AUTH.token = null;
+      updateAuthUI();
+    }
   }
 }
 
-function setupEventHandlers() {
-  const authForm = document.getElementById('auth-form');
-  const tokenInput = document.getElementById('auth-token');
-  const officeInput = document.getElementById('auth-office');
-  const storeForm = document.getElementById('store-form');
-  const uploadForm = document.getElementById('upload-form');
-  const refreshButton = document.getElementById('refresh-stores');
-  const storeSelect = document.getElementById('store-select');
-  const uploadSelect = document.getElementById('upload-store-select');
-  const storeList = document.getElementById('store-list');
+function setSelectedStore(storeId) {
+  state.selectedStoreId = storeId;
+  renderStores();
+}
 
-  authForm?.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const token = tokenInput?.value.trim() || '';
-    const office = officeInput?.value.trim() || '';
-    state.token = token;
-    state.office = office;
-    persistCredentials({ token, office });
-    if (token) {
-      updateAuthStatus('接続待機中', 'pending');
-      loadStores();
-    } else {
-      updateAuthStatus('未接続', 'idle');
+function openCreateDialog() {
+  if (!createDialog) return;
+  createDialog.hidden = false;
+  createDialog.setAttribute('aria-modal', 'true');
+  setStatus(createStatusEl, '', undefined);
+  setTimeout(() => {
+    const firstInput = createDialog.querySelector('input[name="displayName"]');
+    if (firstInput instanceof HTMLElement) {
+      firstInput.focus();
+    }
+  }, 16);
+}
+
+function closeCreateDialog() {
+  if (!createDialog) return;
+  createDialog.hidden = true;
+  createDialog.removeAttribute('aria-modal');
+  setStatus(createStatusEl, '', undefined);
+}
+
+function updateAuthUI() {
+  const token = getActiveToken();
+  const supabaseActive = Boolean(state.supabase);
+  const indicatorText = token
+    ? '認証済み'
+    : supabaseActive
+      ? '未認証'
+      : '手動トークン未設定';
+  if (authIndicator) {
+    authIndicator.textContent = indicatorText;
+    authIndicator.dataset.state = token ? 'success' : 'idle';
+  }
+  if (sessionStatusEl) {
+    sessionStatusEl.textContent = supabaseActive ? 'Supabase 連携中' : '手動モード';
+  }
+  if (sessionWorkspaceEl) {
+    sessionWorkspaceEl.textContent = supabaseActive
+      ? 'Supabase が自動判定'
+      : 'サーバが自動的に決定';
+  }
+  if (sessionTokenEl) {
+    sessionTokenEl.textContent = token ? 'Bearer 取得済み' : '未取得';
+  }
+  if (manualAuthSection) {
+    manualAuthSection.hidden = supabaseActive;
+  }
+  if (loginButton) {
+    loginButton.disabled = !supabaseActive;
+  }
+  if (logoutButton) {
+    logoutButton.disabled = !supabaseActive;
+  }
+  if (storesStatusEl && !token) {
+    setStatus(storesStatusEl, '認証情報が必要です。', 'info');
+  }
+  if (!token) {
+    state.stores = [];
+    state.selectedStoreId = '';
+    state.lastRefresh = null;
+    heroRefreshEl.textContent = '—';
+    renderStores();
+  }
+}
+
+async function setSessionFromSupabase() {
+  if (!state.supabase) {
+    AUTH.token = null;
+    updateAuthUI();
+    return;
+  }
+  try {
+    const { data } = await state.supabase.auth.getSession();
+    const session = data?.session || null;
+    AUTH.token = session?.access_token || null;
+  } catch (error) {
+    console.error('[ui] failed to obtain Supabase session', error);
+    AUTH.token = null;
+  }
+  updateAuthUI();
+}
+
+function attachSupabaseListeners() {
+  if (!state.supabase) return;
+  state.supabase.auth.onAuthStateChange(async () => {
+    await setSessionFromSupabase();
+    if (getActiveToken()) {
+      await fetchStores(true);
+    }
+  });
+}
+
+function handleStoreListClick(event) {
+  const target = event.target instanceof HTMLElement ? event.target.closest('[data-store-id]') : null;
+  if (!target) return;
+  const storeId = target.dataset.storeId || '';
+  if (!storeId) return;
+  setSelectedStore(storeId);
+}
+
+function handleStoreListKeydown(event) {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const target = event.target instanceof HTMLElement ? event.target.closest('[data-store-id]') : null;
+  if (!target) return;
+  event.preventDefault();
+  const storeId = target.dataset.storeId || '';
+  if (!storeId) return;
+  setSelectedStore(storeId);
+}
+
+async function bootstrap() {
+  sidebarYear.textContent = new Date().getFullYear().toString();
+  state.manualToken = loadManualToken();
+  state.supabase = await initSupabase();
+  updateAuthUI();
+  await setSessionFromSupabase();
+  attachSupabaseListeners();
+  if (!state.supabase && state.manualToken) {
+    manualTokenInput.value = state.manualToken;
+  }
+  if (getActiveToken()) {
+    await fetchStores(true);
+  }
+}
+
+if (storeListEl) {
+  storeListEl.addEventListener('click', handleStoreListClick);
+  storeListEl.addEventListener('keydown', handleStoreListKeydown);
+}
+
+storeSelector?.addEventListener('change', (event) => {
+  const nextId = event.target.value;
+  setSelectedStore(nextId || '');
+});
+
+uploadSelect?.addEventListener('change', (event) => {
+  const geminiName = event.target.value;
+  if (!geminiName) {
+    state.selectedStoreId = '';
+    renderStores();
+    return;
+  }
+  const store = state.stores.find((entry) => entry.geminiName === geminiName);
+  if (store) {
+    setSelectedStore(store.id);
+  }
+});
+
+refreshButton?.addEventListener('click', () => {
+  void fetchStores(true);
+});
+
+storeForm?.addEventListener('submit', handleCreateStore);
+uploadForm?.addEventListener('submit', handleUpload);
+openCreateDialogButton?.addEventListener('click', openCreateDialog);
+cancelCreateButton?.addEventListener('click', closeCreateDialog);
+
+manualAuthForm?.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const token = manualTokenInput?.value.trim() || '';
+  state.manualToken = token;
+  persistManualToken(token);
+  updateAuthUI();
+  if (token) {
+    void fetchStores(true);
+  }
+});
+
+manualClearButton?.addEventListener('click', () => {
+  state.manualToken = '';
+  persistManualToken('');
+  if (manualTokenInput) manualTokenInput.value = '';
+  updateAuthUI();
+  state.stores = [];
+  state.selectedStoreId = '';
+  renderStores();
+});
+
+if (loginButton) {
+  loginButton.addEventListener('click', async () => {
+    if (!state.supabase) {
+      manualTokenInput?.focus();
+      return;
+    }
+    try {
+      await state.supabase.auth.signInWithOAuth({
+        provider: state.supabaseProvider,
+        options: {
+          redirectTo: window.location.href
+        }
+      });
+    } catch (error) {
+      console.error('[ui] failed to start OAuth flow', error);
+      setStatus(storesStatusEl, 'ログインの開始に失敗しました。', 'error');
+    }
+  });
+}
+
+if (logoutButton) {
+  logoutButton.addEventListener('click', async () => {
+    if (!state.supabase) {
+      state.manualToken = '';
+      persistManualToken('');
+      updateAuthUI();
+      renderStores();
+      return;
+    }
+    try {
+      await state.supabase.auth.signOut();
+      AUTH.token = null;
+      updateAuthUI();
       state.stores = [];
       state.selectedStoreId = '';
       renderStores();
+    } catch (error) {
+      console.error('[ui] failed to sign out', error);
+      setStatus(storesStatusEl, 'ログアウトに失敗しました。', 'error');
     }
-  });
-
-  storeForm?.addEventListener('submit', (event) => {
-    event.preventDefault();
-    if (!state.token) {
-      setStatus(document.getElementById('store-status'), 'Bearer トークンを設定してください。', 'error');
-      return;
-    }
-    createStore(storeForm);
-  });
-
-  uploadForm?.addEventListener('submit', (event) => {
-    event.preventDefault();
-    if (!state.token) {
-      setStatus(document.getElementById('upload-status'), 'Bearer トークンを設定してください。', 'error');
-      return;
-    }
-    uploadDocument(uploadForm);
-  });
-
-  refreshButton?.addEventListener('click', () => {
-    loadStores();
-  });
-
-  storeSelect?.addEventListener('change', (event) => {
-    const nextId = event.target.value;
-    state.selectedStoreId = nextId;
-    renderStores();
-  });
-
-  uploadSelect?.addEventListener('change', (event) => {
-    const nextId = event.target.value;
-    state.selectedStoreId = nextId;
-    renderStores();
-  });
-
-  storeList?.addEventListener('click', (event) => {
-    const target = event.target.closest('li[data-store-id]');
-    if (!target) return;
-    state.selectedStoreId = target.dataset.storeId || '';
-    renderStores();
-  });
-  storeList?.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' && event.key !== ' ') {
-      return;
-    }
-    const target = event.target.closest('li[data-store-id]');
-    if (!target) return;
-    event.preventDefault();
-    state.selectedStoreId = target.dataset.storeId || '';
-    renderStores();
   });
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  const credentials = loadCredentials();
-  state.token = credentials.token;
-  state.office = credentials.office;
+if (createDialog) {
+  createDialog.addEventListener('click', (event) => {
+    if (event.target === createDialog) {
+      closeCreateDialog();
+    }
+  });
+}
 
-  const tokenInput = document.getElementById('auth-token');
-  const officeInput = document.getElementById('auth-office');
-  if (tokenInput) tokenInput.value = state.token;
-  if (officeInput) officeInput.value = state.office;
+if (uploadFileInput) {
+  uploadFileInput.addEventListener('change', () => {
+    if (!uploadFileInput.files || uploadFileInput.files.length === 0) {
+      return;
+    }
+    const file = uploadFileInput.files[0];
+    if (file.size > 0 && file.name.endsWith('.zip')) {
+      pushActivity('ZIP ファイルを検出しました。Gemini 側で自動展開されます。', 'info');
+    }
+  });
+}
 
-  const footerYear = document.getElementById('footer-year');
-  if (footerYear) {
-    footerYear.textContent = new Date().getFullYear().toString();
-  }
-
-  updateAuthStatus(state.token ? '接続待機中' : '未接続', state.token ? 'pending' : 'idle');
-  renderStores();
-  setupEventHandlers();
-
-  if (state.token) {
-    loadStores();
-  }
-});
+void bootstrap();
