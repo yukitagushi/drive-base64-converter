@@ -226,16 +226,28 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
     uploaded_by: staff.id,
   };
 
-  const { data, error } = await supabase
+  const { data: adminInserted, error: adminInsertError } = await admin
     .from('file_store_files')
     .insert(insertPayload)
-    .select('id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at')
+    .select(
+      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at'
+    )
     .single();
 
-  if (error) {
-    console.error('Supabase file insert error:', error.message);
-    throw new Error(error.message);
+  if (adminInsertError) {
+    console.error('Supabase file insert error:', adminInsertError.message);
+    throw new Error(adminInsertError.message);
   }
+
+  const { data: readerRow } = await supabase
+    .from('file_store_files')
+    .select(
+      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at'
+    )
+    .eq('id', adminInserted.id)
+    .maybeSingle();
+
+  const data = readerRow || adminInserted;
 
   res.status(201).json({
     item: {
@@ -379,7 +391,7 @@ async function handleJsonUpload(
     uploaded_by: context.staff.id,
   };
 
-  const { data, error } = await context.supabase
+  const { data: adminInserted, error: adminInsertError } = await context.admin
     .from('file_store_files')
     .insert(insertPayload)
     .select(
@@ -387,10 +399,20 @@ async function handleJsonUpload(
     )
     .single();
 
-  if (error) {
-    console.error('Supabase file insert error:', error.message);
-    throw new Error(error.message);
+  if (adminInsertError) {
+    console.error('Supabase file insert error:', adminInsertError.message);
+    throw new Error(adminInsertError.message);
   }
+
+  const { data: readerRow } = await context.supabase
+    .from('file_store_files')
+    .select(
+      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at'
+    )
+    .eq('id', adminInserted.id)
+    .maybeSingle();
+
+  const data = readerRow || adminInserted;
 
   try {
     await context.admin.storage.from(bucket).remove([path]);
