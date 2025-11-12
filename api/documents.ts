@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { extname } from 'node:path';
 import JSZip from 'jszip';
+import type { JSZipObject } from 'jszip';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
 import {
   getSupabaseBearerToken,
@@ -635,13 +636,13 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
 }
 
 async function buildZipSummaryText(buffer: Buffer, originalName: string): Promise<{ text: string; note: string | null }> {
-  let archive;
+  let archive: JSZip;
   try {
     archive = await JSZip.loadAsync(buffer);
   } catch (error: any) {
     throw new Error(`ZIP ファイルの展開に失敗しました: ${error?.message || error}`);
   }
-  const entries = Object.values(archive.files || {});
+  const entries: JSZipObject[] = Object.values(archive.files || {});
 
   if (!entries.length) {
     return {

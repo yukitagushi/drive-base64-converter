@@ -85,6 +85,7 @@ interface SignedUploadOptions {
   admin?: SupabaseClient;
   bucket: string;
   path: string;
+  upsert?: boolean;
   expiresInSeconds?: number;
 }
 
@@ -95,7 +96,7 @@ export async function createSignedUploadUrl(options: SignedUploadOptions): Promi
   signedUrl: string;
   expiresAt: string | null;
 }> {
-  const { bucket, path, admin, expiresInSeconds = 300 } = options;
+  const { bucket, path, admin, upsert = true, expiresInSeconds = 3600 } = options;
 
   if (!bucket) {
     throw new Error('Bucket 名が指定されていません。');
@@ -109,7 +110,7 @@ export async function createSignedUploadUrl(options: SignedUploadOptions): Promi
 
   const { data, error } = await client.storage
     .from(bucket)
-    .createSignedUploadUrl(path, expiresInSeconds);
+    .createSignedUploadUrl(path, { upsert });
 
   if (error) {
     throw new Error(error.message || '署名付きアップロード URL の生成に失敗しました。');
@@ -120,6 +121,10 @@ export async function createSignedUploadUrl(options: SignedUploadOptions): Promi
     path: (data as any)?.path || path,
     token: (data as any)?.token || '',
     signedUrl: (data as any)?.signedUrl || '',
-    expiresAt: (data as any)?.expiresAt || null,
+    expiresAt:
+      (data as any)?.expiresAt ||
+      (Number.isFinite(expiresInSeconds)
+        ? new Date(Date.now() + expiresInSeconds * 1000).toISOString()
+        : null),
   };
 }
