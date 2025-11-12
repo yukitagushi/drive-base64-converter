@@ -6,7 +6,8 @@ A monochrome single-page AI knowledge system that integrates Gemini File Search 
 
 Create an `.env` file (or configure Vercel project variables) with the following keys:
 
-- `GOOGLE_API_KEY` – Gemini API key.
+- `GEMINI_API_KEY` – Gemini API key (falls back to `GOOGLE_API_KEY` if omitted).
+- `GOOGLE_API_KEY` – Legacy alias for the Gemini key.
 - `SUPABASE_URL` – Supabase project URL (https://<project-ref>.supabase.co).
 - `SUPABASE_ANON_KEY` – Supabase anon/public API key.
 - `SUPABASE_SERVICE_ROLE_KEY` – Supabase service-role key (used only on the server/API layer).
@@ -32,21 +33,30 @@ After deploying, confirm that clicking **Google でログイン** navigates to `
 
 ## API verification
 
-Use the following `curl` commands (adjusting domain and IDs) to verify the serverless functions respond with JSON during deployments:
+Use the following `curl` commands (adjusting domain, bearer token, and IDs) to verify the serverless functions respond with JSON during deployments:
 
 ```bash
 curl -sS https://<your-domain>/api/state
-curl -sS "https://<your-domain>/api/file-stores?officeId=<uuid>"
-curl -sS -X POST "https://<your-domain>/api/file-stores" \
+curl -sS \
+  -H "Authorization: Bearer <access_token>" \
+  "https://<your-domain>/api/file-stores"
+curl -sS \
+  -H "Authorization: Bearer <access_token>" \
+  -X POST "https://<your-domain>/api/file-stores" \
   -H "Content-Type: application/json" \
-  -d '{"officeId":"<uuid>","displayName":"Example Store","description":"demo"}'
-curl -sS "https://<your-domain>/api/documents?fileStoreId=<uuid>"
-curl -sS -X POST "https://<your-domain>/api/documents" \
-  -H "Content-Type: application/json" \
-  -d '{"fileStoreId":"<uuid>","geminiFileName":"files/demo","displayName":"Spec.pdf","sizeBytes":12345,"mimeType":"application/pdf"}'
+  -d '{"displayName":"Example Store","description":"demo"}'
+curl -sS \
+  -H "Authorization: Bearer <access_token>" \
+  "https://<your-domain>/api/documents?fileStoreId=<uuid>"
+curl -sS \
+  -H "Authorization: Bearer <access_token>" \
+  -X POST "https://<your-domain>/api/documents" \
+  -F "fileStoreId=<uuid>" \
+  -F "memo=demo upload" \
+  -F "file=@./sample.pdf"
 curl -i -X POST "https://<your-domain>/api/auth/login-email" \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","password":"secret"}'
 ```
 
-Each endpoint should return `application/json` responses for both success and error cases (e.g., 4xx/5xx).
+Each endpoint should return `application/json` responses for both success and error cases (e.g., 4xx/5xx). To validate row-level security, issue the same `GET /api/file-stores` request with two different user access tokens and confirm that each user only sees stores for their office. Repeat the check for `GET /api/documents?fileStoreId=...` to ensure cross-office access is rejected with `403`.

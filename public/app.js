@@ -134,6 +134,51 @@ const SAMPLE_NOTES = [
   },
 ];
 
+function normalizeStoreRow(row = {}) {
+  const item = row || {};
+  const fileCountValue =
+    typeof item.fileCount === 'number'
+      ? item.fileCount
+      : typeof item.file_count === 'number'
+      ? item.file_count
+      : 0;
+  const sizeBytesValue =
+    typeof item.sizeBytes === 'number'
+      ? item.sizeBytes
+      : typeof item.size_bytes === 'number'
+      ? item.size_bytes
+      : 0;
+
+  return {
+    id: item.id || item.storeId || '',
+    organizationId: item.organizationId || item.organization_id || null,
+    officeId: item.officeId || item.office_id || null,
+    geminiStoreName: item.geminiStoreName || item.gemini_store_name || item.name || '',
+    displayName: item.displayName || item.display_name || item.name || '',
+    description: item.description || null,
+    createdBy: item.createdBy || item.created_by || null,
+    createdAt: item.createdAt || item.created_at || null,
+    fileCount: fileCountValue,
+    sizeBytes: sizeBytesValue,
+  };
+}
+
+function normalizeFileRow(row = {}) {
+  const item = row || {};
+  return {
+    id: item.id || '',
+    fileStoreId: item.fileStoreId || item.file_store_id || null,
+    geminiFileName: item.geminiFileName || item.gemini_file_name || item.name || '',
+    displayName: item.displayName || item.display_name || item.name || '',
+    description: item.description || null,
+    sizeBytes: typeof item.sizeBytes === 'number' ? item.sizeBytes : typeof item.size_bytes === 'number' ? item.size_bytes : 0,
+    mimeType: item.mimeType || item.mime_type || null,
+    uploadedBy: item.uploadedBy || item.uploaded_by || null,
+    uploadedAt: item.uploadedAt || item.uploaded_at || null,
+    updatedAt: item.updatedAt || item.updated_at || null,
+  };
+}
+
 function ensureAuthenticated(options = {}) {
   if (authState.authenticated) {
     return true;
@@ -151,8 +196,10 @@ function ensureAuthenticated(options = {}) {
 
 async function safeFetch(url, options = {}) {
   const mergedHeaders = { ...(options?.headers || {}) };
+  const body = options?.body;
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
   const hasContentType = Object.keys(mergedHeaders).some((key) => key.toLowerCase() === 'content-type');
-  if (!hasContentType) {
+  if (!hasContentType && !isFormData) {
     mergedHeaders['Content-Type'] = 'application/json';
   }
   const hasAuthorization = Object.keys(mergedHeaders).some((key) => key.toLowerCase() === 'authorization');
@@ -1544,6 +1591,10 @@ async function loadDocuments() {
     renderDocuments(list);
   } catch (error) {
     console.error(error);
+    if (typeof error.message === 'string' && error.message.includes('fileStoreId')) {
+      renderDocuments([]);
+      return;
+    }
     documentList.innerHTML = '<p class="form-error">ドキュメントを読み込めませんでした。</p>';
   }
 }
@@ -1565,11 +1616,12 @@ async function loadStores(options = {}) {
     if (data?.error) {
       throw new Error(data.error || 'ファイルストアの取得に失敗しました');
     }
-    storeCache = Array.isArray(data.stores)
-      ? data.stores
-      : Array.isArray(data.items)
+    const rawItems = Array.isArray(data.items)
       ? data.items
+      : Array.isArray(data.stores)
+      ? data.stores
       : [];
+    storeCache = rawItems.map((row) => normalizeStoreRow(row)).filter((item) => item.id && item.geminiStoreName);
     if (data.session) {
       applySessionUpdate(data.session, data.threads);
       renderSessionSelectors();
@@ -1642,13 +1694,14 @@ function renderStores() {
   for (const store of storeCache) {
     const card = document.createElement('article');
     card.className = 'store-card';
-    card.dataset.storeName = store.name;
+    card.dataset.storeId = store.id;
+    card.dataset.geminiStore = store.geminiStoreName;
 
     const header = document.createElement('div');
     header.className = 'store-card__header';
     const title = document.createElement('h4');
     title.className = 'store-title';
-    title.textContent = store.displayName || store.name;
+    title.textContent = store.displayName || store.geminiStoreName;
     const action = document.createElement('button');
     action.type = 'button';
     action.className = 'btn btn-chip';
@@ -1660,7 +1713,7 @@ function renderStores() {
     const meta = document.createElement('div');
     meta.className = 'store-meta';
     meta.innerHTML = `
-      <span>ID: ${escapeHtml(store.name)}</span>
+      <span>ID: ${escapeHtml(store.geminiStoreName)}</span>
       <span>ファイル ${store.fileCount ?? 0} 件</span>
       <span>${formatBytes(store.sizeBytes || 0)}</span>
     `;
@@ -1719,14 +1772,19 @@ async function onUploadFile(event) {
   uploadFeedback.textContent = '';
 
   const file = uploadFileInput.files?.[0];
-  const storeName = uploadStoreSelect.value;
+  const storeId = uploadStoreSelect.value;
 
   if (!file) {
     uploadFeedback.textContent = 'ファイルを選択してください。';
     return;
   }
-  if (!storeName) {
+  if (!storeId) {
     uploadFeedback.textContent = '保存先のストアを選択してください。';
+    return;
+  }
+
+  if (!storeCache.some((entry) => entry.id === storeId)) {
+    uploadFeedback.textContent = '選択したストアが見つかりません。再読み込みしてください。';
     return;
   }
 
@@ -1734,24 +1792,34 @@ async function onUploadFile(event) {
     submitUploadBtn.disabled = true;
     submitUploadBtn.textContent = 'アップロード中...';
 
-    const base64 = await readFileAsBase64(file);
-    const data = await safeFetch(`/api/file-stores/${encodeURIComponent(storeName)}/files`, {
+    const formData = new FormData();
+    formData.append('fileStoreId', storeId);
+    formData.append('file', file);
+    formData.append('displayName', file.name);
+    const notes = uploadNotesInput.value.trim();
+    if (notes) {
+      formData.append('memo', notes);
+    }
+
+    const data = await safeFetch('/api/documents', {
       method: 'POST',
-      body: JSON.stringify({
-        fileName: file.name,
-        mimeType: file.type,
-        size: file.size,
-        description: uploadNotesInput.value.trim(),
-        data: base64,
-      }),
+      body: formData,
     });
     if (data?.error) {
       throw new Error(data.error || 'アップロードに失敗しました');
     }
 
     uploadDialog.close();
+    showToast('ファイルをアップロードしました。');
     await loadStores({ silent: true });
-    storeFilesCache.delete(storeName);
+
+    const uploaded = normalizeFileRow(data.item || data.file);
+    if (uploaded && uploaded.fileStoreId) {
+      const existing = storeFilesCache.get(uploaded.fileStoreId) || [];
+      storeFilesCache.set(uploaded.fileStoreId, [uploaded, ...existing]);
+    } else {
+      storeFilesCache.delete(storeId);
+    }
   } catch (error) {
     console.error(error);
     uploadFeedback.textContent = error.message;
@@ -1812,15 +1880,15 @@ async function onStoreListClick(event) {
   if (!button) return;
   const card = button.closest('.store-card');
   if (!card) return;
-  const storeName = card.dataset.storeName;
-  if (!storeName) return;
+  const storeId = card.dataset.storeId;
+  if (!storeId) return;
 
   if (button.dataset.action === 'toggle-files') {
-    await toggleStoreFiles(card, button, storeName);
+    await toggleStoreFiles(card, button, storeId);
   }
 }
 
-async function toggleStoreFiles(card, button, storeName) {
+async function toggleStoreFiles(card, button, storeId) {
   const container = card.querySelector('.store-files');
   const isOpen = container && !container.hidden;
 
@@ -1839,14 +1907,15 @@ async function toggleStoreFiles(card, button, storeName) {
   container.hidden = false;
 
   try {
-    let files = storeFilesCache.get(storeName);
+    let files = storeFilesCache.get(storeId);
     if (!files) {
-      const data = await safeFetch(`/api/file-stores/${encodeURIComponent(storeName)}/files`);
+      const data = await safeFetch(`/api/documents?fileStoreId=${encodeURIComponent(storeId)}`);
       if (data?.error) {
         throw new Error(data.error || 'ファイル一覧の取得に失敗しました');
       }
-      files = Array.isArray(data.files) ? data.files : [];
-      storeFilesCache.set(storeName, files);
+      const rawFiles = Array.isArray(data.items) ? data.items : Array.isArray(data.files) ? data.files : [];
+      files = rawFiles.map((row) => normalizeFileRow(row));
+      storeFilesCache.set(storeId, files);
     }
     renderFileList(container, files);
     button.textContent = '閉じる';
@@ -1872,7 +1941,8 @@ function renderFileList(container, files) {
     const left = document.createElement('span');
     left.textContent = file.displayName || file.name;
     const right = document.createElement('span');
-    right.textContent = `${formatBytes(file.sizeBytes || 0)} / ${formatDate(file.updateTime || file.createTime)}`;
+    const timestamp = file.uploadedAt || file.updatedAt || file.updateTime || file.createTime || file.createdAt;
+    right.textContent = `${formatBytes(file.sizeBytes || 0)} / ${formatDate(timestamp)}`;
     row.appendChild(left);
     row.appendChild(right);
     container.appendChild(row);
@@ -1945,23 +2015,6 @@ function autoResize(textarea) {
   resize();
 }
 
-function readFileAsBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result === 'string') {
-        const base64 = result.split(',')[1] || '';
-        resolve(base64);
-      } else {
-        reject(new Error('ファイルの読み込みに失敗しました'));
-      }
-    };
-    reader.onerror = () => reject(new Error('ファイルの読み込みに失敗しました'));
-    reader.readAsDataURL(file);
-  });
-}
-
 function updateStoreSelect(options = {}) {
   if (!uploadStoreSelect) return;
   const { preserveSelection = true, defaultToFirst = false } = options;
@@ -1971,16 +2024,16 @@ function updateStoreSelect(options = {}) {
   uploadStoreSelect.innerHTML = '<option value="">ストアを選択してください</option>';
   for (const store of storeCache) {
     const option = document.createElement('option');
-    option.value = store.name;
-    option.textContent = store.displayName || store.name;
+    option.value = store.id;
+    option.textContent = store.displayName || store.geminiStoreName;
     uploadStoreSelect.appendChild(option);
     if (!firstValue) {
-      firstValue = store.name;
+      firstValue = store.id;
     }
   }
 
   let nextValue = '';
-  if (previousValue && storeCache.some((store) => store.name === previousValue)) {
+  if (previousValue && storeCache.some((store) => store.id === previousValue)) {
     nextValue = previousValue;
   } else if (defaultToFirst && firstValue) {
     nextValue = firstValue;

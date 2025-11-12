@@ -7,6 +7,7 @@
     "strict": false,
     "resolveJsonModule": true,
     "skipLibCheck": true,
+    "lib": ["ES2021", "DOM"],
     "types": ["@types/node"]
   },
   "include": ["api/**/*.ts", "lib/**/*.ts", "supabase/**/*.ts"]
