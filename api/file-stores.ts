@@ -148,13 +148,18 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
 
   const description = typeof body.description === 'string' ? body.description : null;
 
-  const store = await createFileStoreIfNeeded(displayName);
+  const requestedStoreId =
+    typeof body.geminiStoreId === 'string' && body.geminiStoreId.trim()
+      ? body.geminiStoreId.trim()
+      : `store-${randomUUID()}`;
+
+  const store = await createFileStoreIfNeeded(requestedStoreId, displayName);
 
   const insertPayload = {
     id: body.id && typeof body.id === 'string' ? body.id : undefined,
     office_id: staff.officeId,
     organization_id: staff.organizationId,
-    gemini_store_name: store.storeName || `store_${randomUUID()}`,
+    gemini_store_name: store.storeName || `fileStores/${requestedStoreId}`,
     display_name: displayName,
     description,
     created_by: staff.id,

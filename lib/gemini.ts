@@ -1,5 +1,6 @@
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const GEMINI_UPLOAD_BASE = 'https://generativelanguage.googleapis.com/upload/v1beta';
+const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com';
+const GEMINI_API_BASE = `${GEMINI_API_ROOT}/v1beta`;
+const GEMINI_UPLOAD_BASE = `${GEMINI_API_ROOT}/upload/v1beta`;
 
 interface GeminiStoreResponse {
   name: string;
@@ -99,36 +100,79 @@ function extractErrorMessage(data: any, fallback: string): string {
   return fallback;
 }
 
-export async function createFileStore(displayName: string): Promise<GeminiStoreResult> {
-  const label = (displayName || '').trim();
-  if (!label) {
-    throw new Error('ストア名を入力してください。');
+export async function createFileStore(
+  storeId: string,
+  displayName?: string
+): Promise<GeminiStoreResult> {
+  const trimmedId = String(storeId || '').trim();
+  if (!trimmedId) {
+    throw new Error('Gemini ストア ID が指定されていません。');
   }
 
-  const response = await geminiFetch(`${GEMINI_API_BASE}/fileStores`, {
+  const label = typeof displayName === 'string' ? displayName.trim() : '';
+  const body: Record<string, string> = {};
+  if (label) {
+    body.displayName = label;
+  }
+
+  const apiKey = ensureApiKey();
+  const url = `${GEMINI_API_ROOT}/v1beta/fileStores?fileStoreId=${encodeURIComponent(trimmedId)}`;
+  const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ displayName: label }),
+    headers: {
+      'content-type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
+    body: JSON.stringify(body),
   });
 
-  const payload = await response.json().catch(() => ({}));
+  const raw = await response.text();
+  let payload: any = {};
+  if (raw) {
+    try {
+      payload = JSON.parse(raw);
+    } catch (error) {
+      payload = raw;
+    }
+  }
+
   if (!response.ok) {
     const message = extractErrorMessage(payload, 'Gemini ストアの作成に失敗しました。');
-    console.error('Gemini createFileStore error:', message, payload?.error || null);
-    throw new Error(message);
+    console.error('Gemini createFileStore error:', {
+      status: response.status,
+      body: payload,
+    });
+    throw new Error(`Gemini ストアの作成に失敗しました: ${response.status} ${message}`);
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return {
+      storeName: `fileStores/${trimmedId}`,
+      displayName: label || trimmedId,
+      createTime: null,
+      updateTime: null,
+    };
   }
 
   const result = normalizeStore(payload as GeminiStoreResponse);
+  if (!result.storeName) {
+    result.storeName = `fileStores/${trimmedId}`;
+  }
+
   console.info('Gemini store created:', {
     name: result.storeName,
     displayName: result.displayName,
   });
+
   return result;
 }
 
-export async function createFileStoreIfNeeded(displayName: string): Promise<GeminiStoreResult> {
-  // The File Search API does not currently expose a lookup by display name, so we always create a new store.
-  return createFileStore(displayName);
+export async function createFileStoreIfNeeded(
+  storeId: string,
+  displayName?: string
+): Promise<GeminiStoreResult> {
+  // The File Search API does not expose a lookup by ID, so we optimistically create the store.
+  return createFileStore(storeId, displayName);
 }
 
 export async function uploadFileToStore(options: {
