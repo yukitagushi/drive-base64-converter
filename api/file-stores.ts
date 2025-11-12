@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
+import { buildSessionPayload, resolveStaffForRequest } from '../lib/api-auth';
 
 function firstValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) {
@@ -30,8 +31,9 @@ export default async function handler(req: any, res: any) {
 
 async function handleGet(req: any, res: any) {
   const admin = getSupabaseAdmin();
-  const officeId = firstValue(req.query?.officeId);
-  const organizationId = firstValue(req.query?.organizationId);
+  const staff = await resolveStaffForRequest(admin, req);
+  const officeId = firstValue(req.query?.officeId) || staff?.officeId || null;
+  const organizationId = firstValue(req.query?.organizationId) || staff?.organizationId || null;
   const createdBy = firstValue(req.query?.createdBy);
 
   let query = admin.from('file_stores').select('*').order('created_at', { ascending: false });
@@ -54,18 +56,31 @@ async function handleGet(req: any, res: any) {
     throw new Error(error.message);
   }
 
-  res.status(200).json({ items: data ?? [] });
+  let sessionPayload = null;
+  if (staff) {
+    sessionPayload = await buildSessionPayload(admin, staff).catch((err: any) => {
+      console.error('file-stores session build error:', err?.message || err);
+      return null;
+    });
+  }
+
+  res.status(200).json({
+    items: data ?? [],
+    session: sessionPayload?.session,
+    threads: sessionPayload?.threads,
+  });
 }
 
 async function handlePost(req: any, res: any) {
   const admin = getSupabaseAdmin();
   const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
+  const staff = await resolveStaffForRequest(admin, req);
 
-  const officeId = body.officeId;
+  const officeId = body.officeId || staff?.officeId;
   const displayName = body.displayName;
   const description = body.description ?? null;
-  const organizationId = body.organizationId ?? null;
-  const createdBy = body.createdBy ?? null;
+  const organizationId = body.organizationId ?? staff?.organizationId ?? null;
+  const createdBy = body.createdBy ?? staff?.id ?? null;
 
   if (!officeId || !displayName) {
     res.status(400).json({ error: 'officeId と displayName は必須です。' });

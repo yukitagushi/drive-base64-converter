@@ -87,6 +87,13 @@ const storeFilesCache = new Map();
 
 let supabaseBrowserClient = null;
 let supabaseClientSignature = null;
+let supabaseAuthSubscription = null;
+let supabaseSessionState = {
+  accessToken: null,
+  refreshToken: null,
+  provider: null,
+};
+let supabaseSessionSyncing = false;
 
 const sessionState = {
   organizationId: null,
@@ -127,11 +134,17 @@ const SAMPLE_NOTES = [
 ];
 
 async function safeFetch(url, options = {}) {
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(options?.headers || {}),
-  };
-  const response = await fetch(url, { ...options, headers });
+  const mergedHeaders = { ...(options?.headers || {}) };
+  const hasContentType = Object.keys(mergedHeaders).some((key) => key.toLowerCase() === 'content-type');
+  if (!hasContentType) {
+    mergedHeaders['Content-Type'] = 'application/json';
+  }
+  const hasAuthorization = Object.keys(mergedHeaders).some((key) => key.toLowerCase() === 'authorization');
+  if (!hasAuthorization && supabaseSessionState.accessToken) {
+    mergedHeaders.Authorization = `Bearer ${supabaseSessionState.accessToken}`;
+  }
+
+  const response = await fetch(url, { ...options, headers: mergedHeaders });
   const contentType = response.headers.get('content-type') || '';
   const isJson = contentType.includes('application/json');
   const body = isJson ? await response.json() : await response.text();
@@ -164,10 +177,13 @@ function updateSupabaseClientFromState() {
   try {
     supabaseBrowserClient = createClient(config.url, config.anonKey, {
       auth: {
-        persistSession: false,
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
       },
     });
     supabaseClientSignature = signature;
+    attachSupabaseAuthListener();
     return true;
   } catch (error) {
     console.error('Failed to initialize Supabase client:', error);
@@ -189,10 +205,126 @@ function hasSupabaseClient() {
   return Boolean(getSupabaseClient({ create: false }));
 }
 
+function attachSupabaseAuthListener() {
+  const client = getSupabaseClient({ create: false });
+  if (!client || supabaseAuthSubscription) {
+    return;
+  }
+  const { data } = client.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+      if (session) {
+        await finalizeSupabaseSession(session, { reason: event });
+      }
+    }
+    if (event === 'SIGNED_OUT') {
+      clearSupabaseSessionTokens();
+      await loadAuth();
+      handleLoggedOut();
+    }
+  });
+  supabaseAuthSubscription = data?.subscription || null;
+}
+
+function setSupabaseSessionTokens(session) {
+  if (!session) {
+    clearSupabaseSessionTokens();
+    return;
+  }
+  supabaseSessionState = {
+    accessToken: session.access_token || null,
+    refreshToken: session.refresh_token || null,
+    provider: session.user?.app_metadata?.provider || null,
+  };
+}
+
+function clearSupabaseSessionTokens() {
+  supabaseSessionState = {
+    accessToken: null,
+    refreshToken: null,
+    provider: null,
+  };
+}
+
+async function finalizeSupabaseSession(session, options = {}) {
+  if (!session || !session.access_token) {
+    return false;
+  }
+
+  const currentToken = supabaseSessionState.accessToken;
+  const incomingToken = session.access_token;
+  if (authState.authenticated && currentToken && currentToken === incomingToken && !options.force) {
+    return true;
+  }
+
+  setSupabaseSessionTokens(session);
+
+  try {
+    const payload = await safeFetch('/api/auth/oauth-session', {
+      method: 'POST',
+      body: JSON.stringify({
+        accessToken: session.access_token,
+        refreshToken: session.refresh_token || null,
+        provider: session.user?.app_metadata?.provider || options.provider || null,
+      }),
+    });
+
+    if (payload?.auth) {
+      applyAuthState(payload.auth);
+    }
+    if (payload?.session) {
+      applySessionPayload(payload.session);
+    }
+    try {
+      await bootstrapAfterAuth({ force: true });
+    } catch (error) {
+      console.error(error);
+    }
+    authDialog?.close();
+    return true;
+  } catch (error) {
+    console.error(error);
+    showToast(error?.message || 'ログインセッションの確立に失敗しました。', { type: 'error' });
+    return false;
+  }
+}
+
+async function syncSupabaseSessionFromClient(options = {}) {
+  if (supabaseSessionSyncing) {
+    return false;
+  }
+
+  const client = getSupabaseClient({ create: false });
+  if (!client) {
+    return false;
+  }
+
+  supabaseSessionSyncing = true;
+  try {
+    const { data, error } = await client.auth.getSession();
+    if (error) {
+      console.error('Failed to load Supabase session:', error);
+      return false;
+    }
+    const session = data?.session || null;
+    if (!session) {
+      if (options.forceLogout && authState.authenticated) {
+        clearSupabaseSessionTokens();
+        await loadAuth();
+        handleLoggedOut();
+      }
+      return false;
+    }
+    return await finalizeSupabaseSession(session, { ...options, force: options.force ?? false });
+  } finally {
+    supabaseSessionSyncing = false;
+  }
+}
+
 init();
 
 async function init() {
   await loadAuth();
+  await syncSupabaseSessionFromClient({ initial: true });
   if (authState.authenticated) {
     try {
       await bootstrapAfterAuth();
@@ -422,6 +554,7 @@ function hideLoginScreen() {
 function handleLoggedOut() {
   hasBootstrapped = false;
   loginVisible = false;
+  clearSupabaseSessionTokens();
   clearSessionData();
   updateAuthUi();
 }
@@ -557,16 +690,33 @@ async function onLoginSubmit(event) {
   }
 
   try {
-    const data = await safeFetch('/api/auth/login-email', {
+    const supabase = getSupabaseClient({ create: false });
+    if (supabase) {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        throw error;
+      }
+      if (!data?.session) {
+        setAuthFeedback('確認メールを送信しました。メールのリンクからログインを完了してください。', { type: 'success' });
+        return;
+      }
+      const success = await finalizeSupabaseSession(data.session, { provider: 'email', force: true });
+      if (success) {
+        loginForm?.reset();
+      }
+      return;
+    }
+
+    const response = await safeFetch('/api/auth/login-email', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
-    if (data?.error) {
-      throw new Error(data.error || 'ログインに失敗しました');
+    if (response?.error) {
+      throw new Error(response.error || 'ログインに失敗しました');
     }
-    applyAuthState(data.auth);
-    if (data.session) {
-      applySessionPayload(data.session);
+    applyAuthState(response.auth);
+    if (response.session) {
+      applySessionPayload(response.session);
     }
     try {
       await bootstrapAfterAuth({ force: true });
@@ -669,7 +819,19 @@ async function onLogout(event) {
   }
 
   try {
-    const data = await safeFetch('/api/auth/logout', { method: 'POST' });
+    const supabase = getSupabaseClient({ create: false });
+    const tokenForLogout = supabaseSessionState.accessToken;
+    if (supabase) {
+      try {
+        await supabase.auth.signOut();
+      } catch (signOutError) {
+        console.error(signOutError);
+      }
+    }
+    const data = await safeFetch('/api/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({ accessToken: tokenForLogout }),
+    });
     if (data?.error) {
       throw new Error(data.error || 'ログアウトに失敗しました');
     }
@@ -685,6 +847,7 @@ async function onLogout(event) {
     console.error(error);
     alert(error.message || 'ログアウトに失敗しました');
   } finally {
+    clearSupabaseSessionTokens();
     if (button) {
       button.disabled = false;
       button.textContent = 'ログアウト';

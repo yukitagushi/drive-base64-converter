@@ -1,4 +1,7 @@
-export default async function handler(req: any, res: any) {
+import type { NextApiRequest, NextApiResponse } from 'next';
+import { buildAuthPayload } from '../../lib/api-auth';
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     if (req.method !== 'GET') {
       res.setHeader('Allow', 'GET');
@@ -6,36 +9,8 @@ export default async function handler(req: any, res: any) {
       return;
     }
 
-    const supabaseUrl = process.env.SUPABASE_URL || '';
-    const anonKey = process.env.SUPABASE_ANON_KEY || '';
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-    const redirectTo = process.env.SUPABASE_GOOGLE_REDIRECT_URL || '';
-
-    let googleUrl: string | null = null;
-
-    if (supabaseUrl && anonKey) {
-      const authorize = new URL(`${supabaseUrl.replace(/\/$/, '')}/auth/v1/authorize`);
-      authorize.searchParams.set('provider', 'google');
-      if (redirectTo) {
-        authorize.searchParams.set('redirect_to', redirectTo);
-      }
-      googleUrl = authorize.toString();
-    }
-
-    res.status(200).json({
-      authenticated: false,
-      user: null,
-      staff: null,
-      supabaseConfigured: Boolean(supabaseUrl && serviceRoleKey),
-      authConfigured: Boolean(supabaseUrl && anonKey),
-      supabase: supabaseUrl && anonKey ? { url: supabaseUrl, anonKey } : null,
-      providers: {
-        google: {
-          enabled: Boolean(supabaseUrl && anonKey),
-          url: googleUrl,
-        },
-      },
-    });
+    const payload = buildAuthPayload({ user: null, staff: null });
+    res.status(200).json(payload);
   } catch (error: any) {
     console.error('Error in /api/auth/state:', error);
     res.status(500).json({ error: error?.message || 'Internal Server Error' });

@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
+import { resolveStaffForRequest } from '../lib/api-auth';
 
 function firstValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) {
@@ -52,6 +53,7 @@ async function handleGet(req: any, res: any) {
 async function handlePost(req: any, res: any) {
   const admin = getSupabaseAdmin();
   const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
+  const staff = await resolveStaffForRequest(admin, req);
 
   const fileStoreId = body.fileStoreId;
   const geminiFileName = body.geminiFileName;
@@ -59,7 +61,7 @@ async function handlePost(req: any, res: any) {
   const sizeBytes = body.sizeBytes ?? null;
   const mimeType = body.mimeType ?? null;
   const description = body.description ?? null;
-  const uploadedBy = body.uploadedBy ?? null;
+  const uploadedBy = body.uploadedBy ?? staff?.id ?? null;
 
   if (!fileStoreId || !geminiFileName || !displayName) {
     res.status(400).json({ error: 'fileStoreId, geminiFileName, displayName は必須です。' });
