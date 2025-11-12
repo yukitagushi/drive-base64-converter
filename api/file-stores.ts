@@ -216,26 +216,23 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   if (req.method === 'OPTIONS') {
     if (typeof res.setHeader === 'function') {
-      res.setHeader('Allow', 'GET,POST');
+      res.setHeader('Allow', 'POST');
     }
     jsonResponse(res, 204, { status: 204, source: 'api', debugId });
     return;
   }
 
   if (req.method === 'GET') {
-    const stores = await readStores();
-    jsonResponse(res, 200, {
-      status: 200,
-      source: 'api',
-      debugId,
-      stores
-    });
+    if (typeof res.setHeader === 'function') {
+      res.setHeader('Allow', 'POST');
+    }
+    respondError(res, 405, 'method_not_allowed', debugId);
     return;
   }
 
   if (req.method !== 'POST') {
     if (typeof res.setHeader === 'function') {
-      res.setHeader('Allow', 'GET,POST');
+      res.setHeader('Allow', 'POST');
     }
     respondError(res, 405, 'method_not_allowed', debugId);
     return;

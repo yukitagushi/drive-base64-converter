@@ -9,6 +9,10 @@
   async function fetchStores() {
     try {
       const res = await fetch('/api/file-stores', { headers: { 'cache-control': 'no-cache' } });
+      if (res.status === 405) {
+        renderStores([]);
+        return;
+      }
       if (!res.ok) {
         throw new Error(`Failed to load stores: ${res.status}`);
       }

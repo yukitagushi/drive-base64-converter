@@ -2,7 +2,20 @@ const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { URL } = require('node:url');
-const handler = require('../api/file-stores.js');
+let handler;
+try {
+  require('ts-node/register');
+  const apiModule = require('../api/file-stores.ts');
+  handler = typeof apiModule === 'function' ? apiModule : apiModule.default;
+} catch (error) {
+  console.error('[dev-server] Unable to load the TypeScript API handler. Run `npm install` before `npm run dev`.');
+  process.exit(1);
+}
+
+if (typeof handler !== 'function') {
+  console.error('[dev-server] Loaded API handler is not a function.');
+  process.exit(1);
+}
 
 const PUBLIC_DIR = path.join(process.cwd(), 'public');
 const PORT = Number(process.env.PORT || 3000);

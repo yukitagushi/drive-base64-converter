@@ -4,6 +4,12 @@
   "private": true,
   "engines": { "node": ">=18" },
   "scripts": {
-    "dev": "node scripts/dev-server.js"
+    "dev": "node scripts/dev-server.js",
+    "check:routes": "node scripts/check-routes.mjs",
+    "test": "npm run check:routes"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
   }
 }
