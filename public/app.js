@@ -2220,20 +2220,35 @@ async function onUploadFile(event) {
     uploadFeedback.textContent = 'アップロード先を準備しています...';
     await ensureUploadBucketReady();
 
-    uploadFeedback.textContent = 'ファイルを準備しています...';
+    uploadFeedback.textContent = '署名付き URL を取得しています...';
     const objectPath = buildStorageObjectPath(file.name);
-    let stagedPath = objectPath;
+    const presign = await safeFetch('/api/storage/presign-upload', {
+      method: 'POST',
+      body: JSON.stringify({
+        bucket: SUPABASE_UPLOAD_BUCKET,
+        path: objectPath,
+        expiresInSeconds: 600,
+      }),
+    });
 
-    const { error: uploadError } = await supabase.storage
+    if (!presign?.token) {
+      throw new Error('署名付きアップロード URL の取得に失敗しました。');
+    }
+
+    uploadFeedback.textContent = 'ファイルをアップロードしています...';
+    const targetPath = presign.path || objectPath;
+    let stagedPath = targetPath;
+
+    const { error: signedUploadError } = await supabase.storage
       .from(SUPABASE_UPLOAD_BUCKET)
-      .upload(objectPath, file, {
-        upsert: true,
+      .uploadToSignedUrl(targetPath, presign.token, file, {
         contentType: file.type || 'application/octet-stream',
+        upsert: true,
       });
 
-    if (uploadError) {
+    if (signedUploadError) {
       stagedPath = null;
-      throw new Error(uploadError.message || 'Supabase へのファイル転送に失敗しました。');
+      throw new Error(signedUploadError.message || 'Supabase へのファイル転送に失敗しました。');
     }
 
     uploadFeedback.textContent = 'Gemini にファイルを登録しています...';
@@ -2241,7 +2256,7 @@ async function onUploadFile(event) {
     const payload = {
       fileStoreId: storeId,
       storageBucket: SUPABASE_UPLOAD_BUCKET,
-      storagePath: objectPath,
+      storagePath: targetPath,
       displayName: file.name,
       memo: notes,
       mimeType: file.type || 'application/octet-stream',

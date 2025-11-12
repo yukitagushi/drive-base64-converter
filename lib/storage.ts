@@ -80,3 +80,46 @@ export async function ensureStorageBucket(options: EnsureBucketOptions): Promise
     throw new Error(message);
   }
 }
+
+interface SignedUploadOptions {
+  admin?: SupabaseClient;
+  bucket: string;
+  path: string;
+  expiresInSeconds?: number;
+}
+
+export async function createSignedUploadUrl(options: SignedUploadOptions): Promise<{
+  bucket: string;
+  path: string;
+  token: string;
+  signedUrl: string;
+  expiresAt: string | null;
+}> {
+  const { bucket, path, admin, expiresInSeconds = 300 } = options;
+
+  if (!bucket) {
+    throw new Error('Bucket 名が指定されていません。');
+  }
+
+  if (!path) {
+    throw new Error('保存先のパスが指定されていません。');
+  }
+
+  const client = admin ?? getSupabaseAdmin();
+
+  const { data, error } = await client.storage
+    .from(bucket)
+    .createSignedUploadUrl(path, expiresInSeconds);
+
+  if (error) {
+    throw new Error(error.message || '署名付きアップロード URL の生成に失敗しました。');
+  }
+
+  return {
+    bucket,
+    path: (data as any)?.path || path,
+    token: (data as any)?.token || '',
+    signedUrl: (data as any)?.signedUrl || '',
+    expiresAt: (data as any)?.expiresAt || null,
+  };
+}
