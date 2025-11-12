@@ -67,7 +67,8 @@ create policy "staff view file stores" on file_stores
 
 create policy "staff insert file stores" on file_stores
   for insert with check (
-    exists (
+    auth.role() = 'service_role'
+    or exists (
       select 1
       from staff_profiles sp
       where sp.user_id = auth.uid()
@@ -88,7 +89,8 @@ create policy "staff view file store files" on file_store_files
 
 create policy "staff insert file store files" on file_store_files
   for insert with check (
-    exists (
+    auth.role() = 'service_role'
+    or exists (
       select 1
       from file_stores fs
       join staff_profiles sp on sp.office_id = fs.office_id
@@ -109,7 +111,8 @@ create policy "staff view threads" on chat_threads
 
 create policy "staff insert threads" on chat_threads
   for insert with check (
-    exists (
+    auth.role() = 'service_role'
+    or exists (
       select 1
       from staff_profiles sp
       where sp.user_id = auth.uid()
@@ -130,7 +133,8 @@ create policy "staff view messages" on chat_messages
 
 create policy "staff insert messages" on chat_messages
   for insert with check (
-    exists (
+    auth.role() = 'service_role'
+    or exists (
       select 1
       from chat_threads ct
       join staff_profiles sp on sp.office_id = ct.office_id
