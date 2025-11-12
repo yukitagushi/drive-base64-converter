@@ -973,6 +973,24 @@ body.show-login #login-screen {
   backdrop-filter: blur(4px);
 }
 
+.modal[data-fallback-open='1'],
+.modal.is-open {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(17, 17, 17, 0.35);
+  backdrop-filter: blur(4px);
+  z-index: 1200;
+  padding: 40px 16px;
+  overflow: auto;
+}
+
+.modal[data-fallback-open='1'] > .modal__surface,
+.modal.is-open > .modal__surface {
+  margin: 0 auto;
+}
+
 
 .modal {
   border: none;

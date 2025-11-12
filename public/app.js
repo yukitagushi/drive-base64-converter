@@ -342,7 +342,7 @@ async function finalizeSupabaseSession(session, options = {}) {
     } catch (error) {
       console.error(error);
     }
-    authDialog?.close();
+    closeDialog(authDialog);
     return true;
   } catch (error) {
     console.error(error);
@@ -383,7 +383,11 @@ async function syncSupabaseSessionFromClient(options = {}) {
   }
 }
 
-init();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init, { once: true });
+} else {
+  init();
+}
 
 async function init() {
   await loadAuth();
@@ -416,20 +420,32 @@ async function init() {
   threadList.addEventListener('click', onThreadListClick);
 
   storeForm.addEventListener('submit', onCreateStore);
-  storeDialog.addEventListener('close', () => {
-    storeForm.reset();
-    storeFeedback.textContent = '';
-    submitStoreBtn.disabled = false;
-  });
+  if (storeDialog) {
+    storeDialog.addEventListener('close', () => {
+      storeForm.reset();
+      storeFeedback.textContent = '';
+      submitStoreBtn.disabled = false;
+    });
+    storeDialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      closeDialog(storeDialog);
+    });
+  }
 
   uploadForm.addEventListener('submit', onUploadFile);
-  uploadDialog.addEventListener('close', () => {
-    uploadForm.reset();
-    uploadFeedback.textContent = '';
-    uploadSummary.textContent = 'ファイルを選択すると詳細が表示されます。';
-    uploadStoreSelect.disabled = !storeCache.length;
-    submitUploadBtn.disabled = true;
-  });
+  if (uploadDialog) {
+    uploadDialog.addEventListener('close', () => {
+      uploadForm.reset();
+      uploadFeedback.textContent = '';
+      uploadSummary.textContent = 'ファイルを選択すると詳細が表示されます。';
+      uploadStoreSelect.disabled = !storeCache.length;
+      submitUploadBtn.disabled = true;
+    });
+    uploadDialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      closeDialog(uploadDialog);
+    });
+  }
 
   uploadFileInput.addEventListener('change', onUploadFileChange);
   uploadStoreSelect.addEventListener('change', updateUploadButtonState);
@@ -439,9 +455,7 @@ async function init() {
     if (closeTarget) {
       const dialogId = closeTarget.getAttribute('data-close-dialog');
       const dialog = document.getElementById(dialogId);
-      if (dialog && typeof dialog.close === 'function') {
-        dialog.close();
-      }
+      closeDialog(dialog);
     }
     if (authMenuOpen && !event.target.closest('.auth-user')) {
       closeAuthMenu();
@@ -461,7 +475,7 @@ async function init() {
   authDialog?.addEventListener('close', onAuthDialogClose);
   accountRequestTrigger?.addEventListener('click', () => openDialog(accountRequestDialog));
   landingRequestButton?.addEventListener('click', () => openDialog(accountRequestDialog));
-  accountRequestCancel?.addEventListener('click', () => accountRequestDialog?.close());
+  accountRequestCancel?.addEventListener('click', () => closeDialog(accountRequestDialog));
   accountRequestConfirm?.addEventListener('click', onAccountRequestConfirm);
   accountRequestDialog?.addEventListener('close', resetAccountRequestDialog);
 
@@ -868,7 +882,7 @@ async function onLoginSubmit(event) {
     } catch (bootstrapError) {
       console.error(bootstrapError);
     }
-    authDialog?.close();
+    closeDialog(authDialog);
   } catch (error) {
     console.error(error);
     setAuthFeedback(error.message || 'ログインに失敗しました。');
@@ -925,7 +939,7 @@ async function onRegisterSubmit(event) {
           type: 'success',
         });
       } else {
-        authDialog?.close();
+        closeDialog(authDialog);
       }
       return;
     }
@@ -1080,7 +1094,7 @@ function onAccountRequestConfirm(event) {
   );
 
   resetAccountRequestDialog();
-  accountRequestDialog.close();
+  closeDialog(accountRequestDialog);
   window.location.href = `mailto:${email}?subject=${subject}&body=${body}`;
 }
 
@@ -1753,7 +1767,7 @@ async function onCreateStore(event) {
     if (data?.error) {
       throw new Error(data.error || 'ストアの作成に失敗しました');
     }
-    storeDialog.close();
+    closeDialog(storeDialog);
     await loadStores({ silent: true });
   } catch (error) {
     console.error(error);
@@ -1809,7 +1823,7 @@ async function onUploadFile(event) {
       throw new Error(data.error || 'アップロードに失敗しました');
     }
 
-    uploadDialog.close();
+    closeDialog(uploadDialog);
     showToast('ファイルをアップロードしました。');
     await loadStores({ silent: true });
 
@@ -1950,8 +1964,38 @@ function renderFileList(container, files) {
 }
 
 function openDialog(dialog) {
-  if (dialog && typeof dialog.showModal === 'function' && !dialog.open) {
-    dialog.showModal();
+  if (!dialog) return;
+  if (typeof dialog.showModal === 'function') {
+    if (!dialog.open) {
+      dialog.showModal();
+    }
+    return;
+  }
+
+  if (!dialog.hasAttribute('open')) {
+    dialog.setAttribute('open', '');
+  }
+  dialog.dataset.fallbackOpen = '1';
+  dialog.classList.add('is-open');
+  dialog.dispatchEvent(new Event('open'));
+}
+
+function closeDialog(dialog) {
+  if (!dialog) return;
+  if (typeof dialog.close === 'function') {
+    try {
+      dialog.close();
+      return;
+    } catch (error) {
+      // browsers without <dialog> support may throw; fallback below
+    }
+  }
+
+  if (dialog.dataset.fallbackOpen === '1' || dialog.hasAttribute('open')) {
+    delete dialog.dataset.fallbackOpen;
+    dialog.removeAttribute('open');
+    dialog.classList.remove('is-open');
+    dialog.dispatchEvent(new Event('close'));
   }
 }
 
@@ -2051,8 +2095,12 @@ function setupDialogDismissal(dialog) {
   if (!dialog) return;
   dialog.addEventListener('click', (event) => {
     if (event.target === dialog) {
-      dialog.close();
+      closeDialog(dialog);
     }
+  });
+  dialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeDialog(dialog);
   });
 }
 
