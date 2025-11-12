@@ -3,70 +3,129 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Gemini File Search Manager</title>
+    <title>Gemini File Search Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
-    <header class="app-header">
-      <h1>Gemini File Search Manager</h1>
-      <p>Gemini File Search ストアの作成とドキュメントアップロードを管理します。</p>
-    </header>
-    <main class="container">
-      <section class="panel">
-        <h2>認証設定</h2>
-        <form id="auth-form" autocomplete="off" class="form-grid">
-          <label>
-            <span>Bearer Token</span>
-            <input id="auth-token" name="authToken" type="password" placeholder="sk-..." autocomplete="off" />
-          </label>
-          <label>
-            <span>ワークスペース</span>
-            <input id="auth-office" name="office" type="text" placeholder="tokyo" autocomplete="off" />
-          </label>
-          <button type="submit">保存</button>
-        </form>
-        <p id="auth-status" class="status" data-state="idle">未接続</p>
-      </section>
-
-      <section class="panel">
-        <h2>File Search ストアの作成</h2>
-        <form id="store-form" class="form-grid">
-          <label>
-            <span>表示名</span>
-            <input id="store-display-name" name="displayName" type="text" required />
-          </label>
-          <label>
-            <span>説明 (任意)</span>
-            <input id="store-description" name="description" type="text" />
-          </label>
-          <button type="submit">ストアを作成</button>
-        </form>
-        <p id="store-status" class="status"></p>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>登録済みストア</h2>
-          <button id="refresh-stores" type="button">再読込</button>
+  <body class="surface">
+    <header class="site-nav">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">Y</span>
+        <div class="brand-text">
+          <span class="brand-name">Yukataguchi Labs</span>
+          <span class="brand-tagline">Gemini Lounge</span>
         </div>
-        <div class="form-grid">
+      </div>
+      <nav class="nav-links" aria-label="主要ナビゲーション">
+        <a href="#overview">概要</a>
+        <a href="#stores">ストア</a>
+        <a href="#uploads">アップロード</a>
+        <a href="#activity">ログ</a>
+      </nav>
+      <div class="nav-actions">
+        <button class="ghost">Language</button>
+        <button class="primary">ログイン</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="overview" class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Gemini File Search</p>
+          <h1>宿泊 / 仮眠予約のようにスムーズなAIドキュメント体験を。</h1>
+          <p>
+            白と黒のミニマルな世界観で、Gemini File Search ストアの作成からファイルのアップロード、検索の準備までを一気通貫で管理できます。ZIP や
+            画像を含む複数フォーマットに対応し、最適なインポートを自動化します。
+          </p>
+          <div class="hero-actions">
+            <a class="primary" href="#stores">ストアを管理</a>
+            <a class="ghost" href="#uploads">ドキュメントを登録</a>
+          </div>
+        </div>
+        <div class="hero-panels">
+          <div class="hero-card">
+            <span class="hero-card-label">接続状態</span>
+            <strong id="auth-status" class="hero-card-value" data-state="idle" role="status" aria-live="polite">未接続</strong>
+            <span class="hero-card-sub">APIキーを安全に保存し、すぐに同期できます。</span>
+          </div>
+          <div class="hero-card">
+            <span class="hero-card-label">最新ストア</span>
+            <strong class="hero-card-value" id="hero-store-count" role="status" aria-live="polite">0 件</strong>
+            <span class="hero-card-sub">オフィス単位で自動的にフィルタリングされます。</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid" aria-labelledby="credentials-heading">
+        <article class="card" id="credentials">
+          <div class="card-header">
+            <h2 id="credentials-heading">認証</h2>
+            <p class="card-subtitle">Bearer トークンとワークスペースを安全に保持します。</p>
+          </div>
+          <form id="auth-form" autocomplete="off" class="form-grid">
+            <label>
+              <span>Bearer Token</span>
+              <input id="auth-token" name="authToken" type="password" placeholder="sk-..." autocomplete="off" />
+            </label>
+            <label>
+              <span>ワークスペース</span>
+              <input id="auth-office" name="office" type="text" placeholder="tokyo" autocomplete="off" />
+            </label>
+            <button type="submit" class="primary full">認証情報を保存</button>
+          </form>
+        </article>
+
+        <article class="card" id="create-store" aria-labelledby="store-heading">
+          <div class="card-header">
+            <h2 id="store-heading">File Search ストアの作成</h2>
+            <p class="card-subtitle">公式仕様に沿ってストアIDを自動生成します。</p>
+          </div>
+          <form id="store-form" class="form-grid">
+            <label>
+              <span>表示名</span>
+              <input id="store-display-name" name="displayName" type="text" required />
+            </label>
+            <label>
+              <span>説明 (任意)</span>
+              <input id="store-description" name="description" type="text" placeholder="検索対象の概要" />
+            </label>
+            <button type="submit" class="primary full">ストアを作成</button>
+          </form>
+          <p id="store-status" class="status" aria-live="polite"></p>
+        </article>
+      </section>
+
+      <section id="stores" class="card" aria-labelledby="stores-heading">
+        <div class="card-header">
+          <div>
+            <h2 id="stores-heading">登録済みストア</h2>
+            <p class="card-subtitle">Gemini の fileSearchStores/* に自動連携します。</p>
+          </div>
+          <div class="card-actions">
+            <button id="refresh-stores" type="button" class="ghost">更新</button>
+          </div>
+        </div>
+        <div class="store-toolbar">
           <label>
             <span>ストア選択</span>
             <select id="store-select"></select>
           </label>
           <label>
-            <span>アップロード用ストア</span>
+            <span>アップロード先</span>
             <select id="upload-store-select"></select>
           </label>
         </div>
-        <div class="store-layout">
-          <div>
-            <h3>ストア一覧</h3>
-            <ul id="store-list" class="store-list" aria-live="polite"></ul>
+        <div class="store-columns">
+          <div class="store-list-wrapper">
+            <ol id="store-list" class="store-list" aria-live="polite"></ol>
           </div>
-          <div>
-            <h3>詳細</h3>
-            <dl class="store-details">
+          <div class="store-details" aria-live="polite">
+            <dl>
               <div>
                 <dt>表示名</dt>
                 <dd id="detail-display-name">—</dd>
@@ -88,10 +147,17 @@
         </div>
       </section>
 
-      <section class="panel">
-        <h2>ドキュメントのアップロード</h2>
+      <section id="uploads" class="card" aria-labelledby="upload-heading">
+        <div class="card-header">
+          <div>
+            <h2 id="upload-heading">ドキュメントのアップロード</h2>
+            <p class="card-subtitle">
+              ZIP / PDF / 画像 / Office 形式などあらゆるバイナリを Gemini File Search に登録します。
+            </p>
+          </div>
+        </div>
         <form id="upload-form" class="form-grid" enctype="multipart/form-data">
-          <label>
+          <label class="file">
             <span>ファイル</span>
             <input id="upload-file" name="file" type="file" required />
           </label>
@@ -99,16 +165,25 @@
             <span>メモ (任意)</span>
             <input id="upload-memo" name="memo" type="text" placeholder="用途メモ" />
           </label>
-          <button type="submit">アップロード</button>
+          <button type="submit" class="primary full">アップロード</button>
         </form>
-        <p id="upload-status" class="status"></p>
+        <p id="upload-status" class="status" aria-live="polite"></p>
       </section>
 
-      <section class="panel">
-        <h2>アクティビティログ</h2>
+      <section id="activity" class="card" aria-labelledby="activity-heading">
+        <div class="card-header">
+          <div>
+            <h2 id="activity-heading">アクティビティログ</h2>
+            <p class="card-subtitle">最新の操作とAPIレスポンスを確認できます。</p>
+          </div>
+        </div>
         <ul id="activity-log" class="activity-log" aria-live="polite"></ul>
       </section>
     </main>
+
+    <footer class="site-footer">
+      <small>&copy; <span id="footer-year"></span> Yukataguchi Labs. Gemini File Search Console.</small>
+    </footer>
 
     <script type="module" src="/app.js"></script>
   </body>

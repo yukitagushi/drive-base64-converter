@@ -59,6 +59,12 @@ function pushActivity(message, status = 'info') {
   }
 }
 
+function updateHeroStoreCount() {
+  const countEl = document.getElementById('hero-store-count');
+  if (!countEl) return;
+  countEl.textContent = `${state.stores.length} 件`;
+}
+
 function summariseError(payload, status) {
   if (!payload) {
     return `リクエストに失敗しました (status: ${status}).`;
@@ -131,12 +137,21 @@ function updateStoreList() {
   const list = document.getElementById('store-list');
   if (!list) return;
   list.innerHTML = '';
+  if (state.stores.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'empty';
+    empty.textContent = 'まだストアが登録されていません。';
+    list.appendChild(empty);
+    return;
+  }
   for (const store of state.stores) {
     const item = document.createElement('li');
     item.dataset.storeId = store.id;
     if (store.id === state.selectedStoreId) {
       item.dataset.active = 'true';
     }
+    item.setAttribute('role', 'button');
+    item.tabIndex = 0;
     const name = document.createElement('span');
     name.textContent = store.displayName || store.id;
     name.className = 'store-item-name';
@@ -199,6 +214,7 @@ function renderStores() {
   updateStoreSelects();
   updateStoreList();
   updateStoreDetails();
+  updateHeroStoreCount();
 }
 
 async function loadStores(showPending = true) {
@@ -435,6 +451,16 @@ function setupEventHandlers() {
     state.selectedStoreId = target.dataset.storeId || '';
     renderStores();
   });
+  storeList?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') {
+      return;
+    }
+    const target = event.target.closest('li[data-store-id]');
+    if (!target) return;
+    event.preventDefault();
+    state.selectedStoreId = target.dataset.storeId || '';
+    renderStores();
+  });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -446,6 +472,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const officeInput = document.getElementById('auth-office');
   if (tokenInput) tokenInput.value = state.token;
   if (officeInput) officeInput.value = state.office;
+
+  const footerYear = document.getElementById('footer-year');
+  if (footerYear) {
+    footerYear.textContent = new Date().getFullYear().toString();
+  }
 
   updateAuthStatus(state.token ? '接続待機中' : '未接続', state.token ? 'pending' : 'idle');
   renderStores();
