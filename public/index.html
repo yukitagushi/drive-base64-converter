@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ja" data-supabase-url="" data-supabase-key="" data-supabase-provider="google">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gemini Lounge – File Search Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-avatar">Y</div>
+          <div class="brand-meta">
+            <p class="brand-title">Yukataguchi Gemini Lounge</p>
+            <p class="brand-sub">File Search Orchestrator</p>
+          </div>
+        </div>
+        <nav class="sidebar-nav" aria-label="ページ内ナビゲーション">
+          <a href="#overview">概要</a>
+          <a href="#stores">ストア</a>
+          <a href="#upload">アップロード</a>
+          <a href="#activity">アクティビティ</a>
+        </nav>
+        <div class="sidebar-status">
+          <p class="status-label">接続状態</p>
+          <p id="auth-indicator" class="status-value" aria-live="polite">検出中…</p>
+          <div class="status-controls">
+            <button type="button" class="ghost" id="login-button">ログイン</button>
+            <button type="button" class="ghost" id="logout-button">ログアウト</button>
+          </div>
+        </div>
+        <div class="sidebar-metrics">
+          <div class="metric">
+            <p class="metric-label">ストア数</p>
+            <p id="metric-store-count" class="metric-value">0</p>
+          </div>
+          <div class="metric">
+            <p class="metric-label">最新更新</p>
+            <p id="metric-last-refresh" class="metric-value">—</p>
+          </div>
+        </div>
+        <div class="sidebar-footer">
+          <p>ZIP・画像・ドキュメントなど幅広いフォーマットに対応。</p>
+          <small>&copy; <span id="sidebar-year"></span> Yukataguchi Labs</small>
+        </div>
+      </aside>
+      <main class="main" id="main">
+        <section id="overview" class="panel hero">
+          <div class="hero-body">
+            <h1>Gemini File Search を、白と黒の美しいワークスペースで。</h1>
+            <p>
+              Gemini Lounge は、File Search ストアの作成からファイルの取り込み、ログの確認までをシームレスに統合したコンソールです。
+              ChatGPT のような没入感あるフローを保ちながら、SaaS チームが日常的に利用できる洗練された UI を目指しました。
+            </p>
+            <ul class="hero-highlights">
+              <li>公式 API に準拠したストア生成・ファイル連携</li>
+              <li>ZIP / PDF / Office / 画像などバイナリを一元管理</li>
+              <li>Supabase 認証と Gemini API の状態を常時監視</li>
+            </ul>
+          </div>
+          <div class="hero-pane">
+            <div class="pane-card">
+              <h2>現在のセッション</h2>
+              <dl>
+                <div>
+                  <dt>ステータス</dt>
+                  <dd id="session-status">確認中…</dd>
+                </div>
+                <div>
+                  <dt>ワークスペース</dt>
+                  <dd id="session-workspace">サーバで自動決定</dd>
+                </div>
+                <div>
+                  <dt>トークン</dt>
+                  <dd id="session-token-state">未取得</dd>
+                </div>
+              </dl>
+            </div>
+            <div class="pane-card" id="manual-auth" hidden>
+              <h2>手動トークン設定</h2>
+              <p class="pane-note">Supabase が無効な場合のフォールバックです。</p>
+              <form id="manual-auth-form" autocomplete="off">
+                <label class="input">
+                  <span>Bearer トークン</span>
+                  <input type="password" id="manual-token" name="token" placeholder="sk-..." autocomplete="off" />
+                </label>
+                <button type="submit" class="primary full">トークンを保存</button>
+                <button type="button" class="ghost full" id="manual-clear">クリア</button>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <section id="stores" class="panel">
+          <header class="panel-header">
+            <div>
+              <h2>File Search ストア管理</h2>
+              <p>Gemini File Search API の仕様に沿ったストアを作成し、Supabase に同期します。</p>
+            </div>
+            <div class="panel-actions">
+              <button type="button" class="ghost" id="refresh-stores">再読み込み</button>
+              <button type="button" class="ghost" id="open-create-dialog">新規作成</button>
+            </div>
+          </header>
+          <div class="panel-body">
+            <div class="store-layout">
+              <div class="store-list">
+                <header>
+                  <p class="label">ストア一覧</p>
+                  <select id="store-selector" aria-label="ストアを選択">
+                    <option value="">選択してください</option>
+                  </select>
+                </header>
+                <ul id="store-list" aria-live="polite"></ul>
+                <p id="stores-status" class="status-line" aria-live="polite"></p>
+              </div>
+              <div class="store-details">
+                <h3>詳細</h3>
+                <dl>
+                  <div>
+                    <dt>表示名</dt>
+                    <dd id="detail-display-name">—</dd>
+                  </div>
+                  <div>
+                    <dt>Gemini 名</dt>
+                    <dd id="detail-gemini-name">—</dd>
+                  </div>
+                  <div>
+                    <dt>説明</dt>
+                    <dd id="detail-description">—</dd>
+                  </div>
+                  <div>
+                    <dt>作成日時</dt>
+                    <dd id="detail-created-at">—</dd>
+                  </div>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="create-store" class="panel dialog" hidden>
+          <form id="store-form" class="panel-body">
+            <h2>ストアを新規作成</h2>
+            <p class="panel-description">displayName のみを入力すると、Gemini の仕様に沿った ID を自動生成します。</p>
+            <label class="input">
+              <span>表示名</span>
+              <input type="text" name="displayName" required placeholder="決裁書類" />
+            </label>
+            <label class="input">
+              <span>説明 (任意)</span>
+              <input type="text" name="description" placeholder="用途や担当メモ" />
+            </label>
+            <div class="dialog-actions">
+              <button type="button" class="ghost" id="cancel-create">キャンセル</button>
+              <button type="submit" class="primary">作成</button>
+            </div>
+            <p id="create-status" class="status-line" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section id="upload" class="panel">
+          <header class="panel-header">
+            <div>
+              <h2>ファイルのアップロード</h2>
+              <p>ZIP / PDF / Office / 画像などを Gemini File Search に登録します。ZIP の場合は自動で展開され、個別ファイルとして登録されます。</p>
+            </div>
+          </header>
+          <form id="upload-form" class="panel-body" enctype="multipart/form-data">
+            <label class="input">
+              <span>アップロード先ストア</span>
+              <select id="upload-store" name="fileSearchStoreName" required>
+                <option value="">選択してください</option>
+              </select>
+            </label>
+            <label class="input file">
+              <span>ファイル</span>
+              <input type="file" name="file" id="upload-file" required />
+            </label>
+            <label class="input">
+              <span>メモ (任意)</span>
+              <textarea name="memo" id="upload-memo" rows="3" placeholder="アップロードの背景や検索用キーワードなど"></textarea>
+            </label>
+            <div class="dialog-actions">
+              <button type="submit" class="primary">アップロード</button>
+            </div>
+            <p id="upload-status" class="status-line" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section id="activity" class="panel">
+          <header class="panel-header">
+            <div>
+              <h2>アクティビティログ</h2>
+              <p>Gemini API / 自前 API のレスポンスを集約し、再発防止のための監査ログを提供します。</p>
+            </div>
+          </header>
+          <div class="panel-body">
+            <ul id="activity-log" aria-live="polite"></ul>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <template id="store-item-template">
+      <li class="store-item" tabindex="0" role="button">
+        <div class="store-item-title"></div>
+        <div class="store-item-meta"></div>
+      </li>
+    </template>
+
+    <script>
+      window.__ENV__ = window.__ENV__ || {};
+      const docEl = document.documentElement;
+      window.__ENV__.SUPABASE_URL = window.__ENV__.SUPABASE_URL || docEl.dataset.supabaseUrl || '';
+      window.__ENV__.SUPABASE_ANON_KEY = window.__ENV__.SUPABASE_ANON_KEY || docEl.dataset.supabaseKey || '';
+      window.__ENV__.SUPABASE_PROVIDER =
+        window.__ENV__.SUPABASE_PROVIDER || docEl.dataset.supabaseProvider || 'google';
+    </script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -2,5 +2,15 @@
   "name": "drive-base64-converter",
   "version": "1.1.0",
   "private": true,
-  "engines": { "node": ">=18" }
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "dev": "node scripts/dev-server.js",
+    "typecheck": "tsc --noEmit",
+    "check:routes": "node scripts/check-routes.mjs",
+    "test": "npm run typecheck && npm run check:routes"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
 }
