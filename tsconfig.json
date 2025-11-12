@@ -10,7 +10,8 @@
     "lib": ["ES2022", "DOM"],
     "types": ["node"],
     "allowSyntheticDefaultImports": true,
-    "noEmit": true
+    "noEmit": true,
+    "typeRoots": ["./types"]
   },
   "include": ["api/**/*.ts", "lib/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules"]

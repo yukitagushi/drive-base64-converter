@@ -1,146 +1,124 @@
-(() => {
-  const form = document.querySelector('[data-file-store-form]');
-  const displayNameInput = document.querySelector('[data-file-store-display-name]');
-  const descriptionInput = document.querySelector('[data-file-store-description]');
-  const select = document.querySelector('[data-file-store-select]');
-  const statusEl = document.querySelector('[data-file-store-status]');
-  const listEl = document.querySelector('[data-file-store-list]');
+import { setTokenProvider, setWorkspaceProvider } from './js/api-client.js';
+import { initializeFileStoreUI } from './js/file-stores.js';
 
-  async function fetchStores() {
-    try {
-      const res = await fetch('/api/file-stores', { headers: { 'cache-control': 'no-cache' } });
-      if (res.status === 405) {
-        renderStores([]);
-        return;
-      }
-      if (!res.ok) {
-        throw new Error(`Failed to load stores: ${res.status}`);
-      }
-      const payload = await res.json();
-      const stores = Array.isArray(payload?.stores) ? payload.stores : [];
-      renderStores(stores);
-    } catch (error) {
-      console.error('[app] failed to fetch stores', error);
-      renderStatus('ストア一覧の取得に失敗しました。', 'error');
+const STORAGE_KEY = 'gemini-lounge-auth';
+
+function loadCredentials() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { token: '', office: '' };
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        token: typeof parsed.token === 'string' ? parsed.token : '',
+        office: typeof parsed.office === 'string' ? parsed.office : ''
+      };
     }
+  } catch (error) {
+    console.warn('[ui] failed to parse stored credentials', error);
+  }
+  return { token: '', office: '' };
+}
+
+function saveCredentials(next) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  } catch (error) {
+    console.warn('[ui] failed to persist credentials', error);
+  }
+}
+
+function setConnectionStatus(text, status) {
+  const statusEl = document.getElementById('connection-status');
+  if (!statusEl) return;
+  statusEl.textContent = text;
+  statusEl.dataset.status = status;
+}
+
+function setupThemeToggle() {
+  const button = document.getElementById('toggle-theme');
+  if (!button) return;
+  button.addEventListener('click', () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? '' : 'dark';
+    if (next) {
+      document.documentElement.dataset.theme = next;
+    } else {
+      delete document.documentElement.dataset.theme;
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const authForm = document.getElementById('auth-form');
+  const tokenInput = document.getElementById('auth-token');
+  const officeInput = document.getElementById('auth-office');
+
+  const credentials = loadCredentials();
+  if (tokenInput) {
+    tokenInput.value = credentials.token;
+  }
+  if (officeInput) {
+    officeInput.value = credentials.office;
   }
 
-  function renderStores(stores) {
-    if (select) {
-      select.innerHTML = '';
-      const defaultOption = document.createElement('option');
-      defaultOption.value = '';
-      defaultOption.textContent = 'ストアを選択';
-      select.appendChild(defaultOption);
+  setTokenProvider(() => credentials.token);
+  setWorkspaceProvider(() => credentials.office);
+  setConnectionStatus(credentials.token ? '接続待機中' : '未接続', credentials.token ? 'pending' : 'idle');
 
-      for (const store of stores) {
-        const option = document.createElement('option');
-        option.value = store.geminiName || store.id;
-        option.textContent = store.displayName || store.id;
-        option.dataset.storeId = store.id;
-        select.appendChild(option);
-      }
-    }
-
-    if (listEl) {
-      listEl.innerHTML = '';
-      for (const store of stores) {
-        const item = document.createElement('li');
-        item.textContent = `${store.displayName || store.id} (${store.id})`;
-        listEl.appendChild(item);
-      }
-    }
-  }
-
-  function renderStatus(message, type) {
-    if (!statusEl) {
-      return;
-    }
-    statusEl.textContent = message;
-    statusEl.dataset.state = type;
-  }
-
-  async function handleSubmit(event) {
+  authForm?.addEventListener('submit', (event) => {
     event.preventDefault();
-    if (!displayNameInput) {
-      renderStatus('フォームが正しく初期化されていません。', 'error');
-      return;
+    const token = tokenInput?.value.trim() ?? '';
+    const office = officeInput?.value.trim() ?? '';
+    credentials.token = token;
+    credentials.office = office;
+    saveCredentials(credentials);
+    setTokenProvider(() => credentials.token);
+    setWorkspaceProvider(() => credentials.office);
+    setConnectionStatus(token ? '接続済み' : '未接続', token ? 'success' : 'idle');
+    if (!token) {
+      setConnectionStatus('未接続', 'idle');
     }
+  });
 
-    const payload = {
-      displayName: displayNameInput.value.trim(),
-      description: descriptionInput ? descriptionInput.value.trim() : undefined
-    };
-
-    if (!payload.displayName) {
-      renderStatus('表示名を入力してください。', 'error');
-      return;
+  const storeDialog = document.getElementById('store-dialog');
+  const initializer = initializeFileStoreUI({
+    getWorkspace: () => credentials.office,
+    onRequireAuth: () => {
+      setConnectionStatus('未接続', 'error');
+    },
+    elements: {
+      statusEl: document.getElementById('store-status'),
+      listEl: document.getElementById('store-list'),
+      selectEl: document.getElementById('store-select'),
+      uploadSelectEl: document.getElementById('upload-store-select'),
+      templateEl: document.getElementById('store-item-template'),
+      storeForm: document.getElementById('store-form'),
+      storeDialog,
+      uploadForm: document.getElementById('upload-form'),
+      uploadStatusEl: document.getElementById('upload-status'),
+      refreshButtons: [
+        document.getElementById('refresh-stores'),
+        document.getElementById('card-refresh-stores')
+      ],
+      openDialogButtons: [
+        document.getElementById('open-store-dialog'),
+        document.getElementById('card-open-store-dialog')
+      ],
+      dialogDismissButtons: Array.from(
+        storeDialog?.querySelectorAll('[data-dismiss]') ?? []
+      ),
+      metaDisplay: document.getElementById('meta-display-name'),
+      metaGemini: document.getElementById('meta-gemini-name'),
+      metaDescription: document.getElementById('meta-description'),
+      metaCreatedAt: document.getElementById('meta-created-at'),
+      activityLog: document.getElementById('activity-log')
     }
+  });
 
-    renderStatus('作成中…', 'pending');
+  // Refresh list when credentials change.
+  authForm?.addEventListener('submit', () => {
+    initializer.refresh();
+  });
 
-    try {
-      const res = await fetch('/api/file-stores', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json'
-        },
-        body: JSON.stringify({
-          displayName: payload.displayName,
-          ...(payload.description ? { description: payload.description } : {})
-        })
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        const message = data?.detail
-          ? `作成に失敗しました: ${JSON.stringify(data.detail)}`
-          : '作成に失敗しました。';
-        renderStatus(message, 'error');
-        return;
-      }
-
-      renderStatus('ストアを作成しました。', 'success');
-      if (displayNameInput) {
-        displayNameInput.value = '';
-      }
-      if (descriptionInput) {
-        descriptionInput.value = '';
-      }
-
-      if (data?.store) {
-        mergeStoreIntoSelect(data.store);
-      } else {
-        await fetchStores();
-      }
-    } catch (error) {
-      console.error('[app] failed to create store', error);
-      renderStatus('ストアの作成に失敗しました。', 'error');
-    }
-  }
-
-  function mergeStoreIntoSelect(store) {
-    if (!select) {
-      return;
-    }
-    const existing = select.querySelector(`option[data-store-id="${store.id}"]`);
-    if (existing) {
-      existing.textContent = store.displayName || store.id;
-      existing.value = store.geminiName || store.id;
-      return;
-    }
-    const option = document.createElement('option');
-    option.value = store.geminiName || store.id;
-    option.textContent = store.displayName || store.id;
-    option.dataset.storeId = store.id;
-    select.appendChild(option);
-    select.value = option.value;
-  }
-
-  if (form) {
-    form.addEventListener('submit', handleSubmit);
-  }
-
-  fetchStores();
-})();
+  setupThemeToggle();
+});

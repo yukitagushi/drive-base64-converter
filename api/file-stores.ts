@@ -1,7 +1,13 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createDebugId, createFileSearchStore, GeminiApiError } from '../lib/gemini';
+import {
+  createDebugId,
+  createFileSearchStore,
+  GeminiApiError,
+  GeminiFileSearchStore
+} from '../lib/gemini';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const STORE_FILE = path.join(DATA_DIR, 'file-stores.json');
@@ -24,6 +30,8 @@ interface FileStoreRecord {
   description?: string;
   geminiName: string;
   createdAt: string;
+  ownerHash: string;
+  office?: string;
 }
 
 interface StoredPayload {
@@ -42,13 +50,16 @@ function jsonResponse(res: ApiResponse, statusCode: number, body: unknown): void
   if (typeof res.setHeader === 'function') {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
   }
-  if (typeof res.status === 'function' && typeof res.json === 'function') {
-    res.status(statusCode).json(body);
+  if (typeof res.status === 'function') {
+    res.status(statusCode);
+  } else {
+    res.statusCode = statusCode;
+  }
+  if (typeof res.json === 'function') {
+    res.json(body);
     return;
   }
-  res.statusCode = statusCode;
-  const payload = JSON.stringify(body);
-  res.end(payload);
+  res.end(JSON.stringify(body));
 }
 
 function respondError(
@@ -59,23 +70,20 @@ function respondError(
   detail?: unknown,
   source: ErrorSource = 'api'
 ): void {
-  const body: Record<string, unknown> = {
+  const payload: Record<string, unknown> = {
     error,
     status: statusCode,
     source,
     debugId
   };
   if (typeof detail !== 'undefined') {
-    body.detail = detail;
+    payload.detail = detail;
   }
-  jsonResponse(res, statusCode, body);
+  jsonResponse(res, statusCode, payload);
 }
 
 function sanitizeDisplayName(value: unknown): string {
-  if (typeof value !== 'string') {
-    return '';
-  }
-  return value.trim();
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function sanitizeDescription(value: unknown): string | undefined {
@@ -83,7 +91,7 @@ function sanitizeDescription(value: unknown): string | undefined {
     return undefined;
   }
   const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
+  return trimmed || undefined;
 }
 
 interface StoreIdResult {
@@ -113,10 +121,27 @@ function buildStoreId(displayName: string): StoreIdResult {
   return { id, hadInvalid };
 }
 
+function validateStoreId(storeId: string): string | null {
+  if (!storeId) {
+    return 'missing';
+  }
+  if (storeId.length < MIN_ID_LENGTH) {
+    return 'too_short';
+  }
+  if (storeId.length > MAX_ID_LENGTH) {
+    return 'too_long';
+  }
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(storeId)) {
+    return 'invalid_chars';
+  }
+  return null;
+}
+
 async function readStores(): Promise<FileStoreRecord[]> {
   try {
     const raw = await fs.readFile(STORE_FILE, 'utf8');
-    const parsed = JSON.parse(raw) as StoredPayload | FileStoreRecord[];
+    const text = typeof raw === 'string' ? raw : raw.toString('utf8');
+    const parsed = JSON.parse(text) as StoredPayload | FileStoreRecord[];
     if (Array.isArray(parsed)) {
       return parsed;
     }
@@ -146,11 +171,7 @@ async function readJsonBody(req: ApiRequest): Promise<RequestBody> {
 
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
-    if (typeof chunk === 'string') {
-      chunks.push(Buffer.from(chunk));
-    } else {
-      chunks.push(chunk as Buffer);
-    }
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer));
   }
   if (!chunks.length) {
     return {};
@@ -182,24 +203,58 @@ function dumpRequestBody(body: RequestBody): Record<string, unknown> {
   return clone;
 }
 
-function validateStoreId(storeId: string): string | null {
-  if (!storeId) {
-    return 'missing';
-  }
-  if (storeId.length < MIN_ID_LENGTH) {
-    return 'too_short';
-  }
-  if (storeId.length > MAX_ID_LENGTH) {
-    return 'too_long';
-  }
-  if (!/^[a-z0-9][a-z0-9_-]*$/.test(storeId)) {
-    return 'invalid_chars';
-  }
-  return null;
-}
-
 function normalizeForComparison(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function extractBearerToken(req: ApiRequest): string | null {
+  const header = req.headers?.authorization || req.headers?.Authorization;
+  if (typeof header !== 'string') {
+    return null;
+  }
+  const match = header.match(/^Bearer\s+(\S+)/i);
+  return match ? match[1] : null;
+}
+
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+function extractOffice(req: ApiRequest): string | undefined {
+  const header = req.headers?.['x-office'];
+  if (typeof header !== 'string') {
+    return undefined;
+  }
+  const trimmed = header.trim();
+  return trimmed || undefined;
+}
+
+function filterStoresByOwner(
+  stores: FileStoreRecord[],
+  ownerHash: string,
+  office?: string
+): FileStoreRecord[] {
+  return stores.filter((store) => {
+    if (store.ownerHash !== ownerHash) {
+      return false;
+    }
+    if (office && store.office && store.office !== office) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function toPublicRecord(store: FileStoreRecord): Omit<FileStoreRecord, 'ownerHash'> {
+  const { ownerHash: _ignored, ...rest } = store;
+  return rest;
+}
+
+function respondMethodNotAllowed(res: ApiResponse, debugId: string): void {
+  if (typeof res.setHeader === 'function') {
+    res.setHeader('Allow', 'GET,POST,OPTIONS');
+  }
+  respondError(res, 405, 'method_not_allowed', debugId);
 }
 
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
@@ -216,25 +271,34 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   if (req.method === 'OPTIONS') {
     if (typeof res.setHeader === 'function') {
-      res.setHeader('Allow', 'POST');
+      res.setHeader('Allow', 'GET,POST,OPTIONS');
     }
     jsonResponse(res, 204, { status: 204, source: 'api', debugId });
     return;
   }
 
+  const token = extractBearerToken(req);
+  if (!token) {
+    respondError(res, 401, 'unauthorized', debugId, 'missing_bearer_token');
+    return;
+  }
+  const ownerHash = hashToken(token);
+  const office = extractOffice(req);
+
   if (req.method === 'GET') {
-    if (typeof res.setHeader === 'function') {
-      res.setHeader('Allow', 'POST');
-    }
-    respondError(res, 405, 'method_not_allowed', debugId);
+    const allStores = await readStores();
+    const filtered = filterStoresByOwner(allStores, ownerHash, office).map(toPublicRecord);
+    jsonResponse(res, 200, {
+      status: 200,
+      source: 'api',
+      debugId,
+      stores: filtered
+    });
     return;
   }
 
   if (req.method !== 'POST') {
-    if (typeof res.setHeader === 'function') {
-      res.setHeader('Allow', 'POST');
-    }
-    respondError(res, 405, 'method_not_allowed', debugId);
+    respondMethodNotAllowed(res, debugId);
     return;
   }
 
@@ -268,11 +332,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   const existing = await readStores();
   const normalizedId = normalizeForComparison(storeId);
   const normalizedName = normalizeForComparison(displayName);
+  const duplicates = filterStoresByOwner(existing, ownerHash, office);
 
-  const duplicate = existing.find((entry) =>
-    normalizeForComparison(entry.id) === normalizedId ||
-    normalizeForComparison(entry.displayName) === normalizedName
-  );
+  const duplicate = duplicates.find((entry) => {
+    return (
+      normalizeForComparison(entry.id) === normalizedId ||
+      normalizeForComparison(entry.displayName) === normalizedName
+    );
+  });
 
   if (duplicate) {
     respondError(res, 409, 'store_already_exists', debugId, {
@@ -283,18 +350,24 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   }
 
   try {
-    const geminiStore = await createFileSearchStore({
+    const geminiStore: GeminiFileSearchStore = await createFileSearchStore({
       storeId,
       displayName,
       description
     });
+
+    if (!geminiStore?.name) {
+      throw new Error('Gemini response did not include a store name');
+    }
 
     const record: FileStoreRecord = {
       id: storeId,
       displayName,
       description,
       geminiName: geminiStore.name,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ownerHash,
+      office
     };
 
     await writeStores([...existing, record]);
@@ -303,14 +376,17 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       status: 201,
       source: 'api',
       debugId,
-      store: record
+      store: toPublicRecord(record)
     });
   } catch (error) {
     if (error instanceof GeminiApiError) {
       respondError(res, error.status || 502, 'gemini_error', debugId, error.body, 'gemini');
       return;
     }
-    console.error('[api/file-stores] unexpected error', { debugId, message: String(error) });
+    console.error('[api/file-stores] unexpected error', {
+      debugId,
+      message: String(error)
+    });
     respondError(res, 500, 'internal_error', debugId);
   }
 }

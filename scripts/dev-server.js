@@ -3,10 +3,14 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { URL } = require('node:url');
 let handler;
+let documentsHandler;
 try {
   require('ts-node/register');
   const apiModule = require('../api/file-stores.ts');
   handler = typeof apiModule === 'function' ? apiModule : apiModule.default;
+  const documentsModule = require('../api/documents.ts');
+  documentsHandler =
+    typeof documentsModule === 'function' ? documentsModule : documentsModule.default;
 } catch (error) {
   console.error('[dev-server] Unable to load the TypeScript API handler. Run `npm install` before `npm run dev`.');
   process.exit(1);
@@ -14,6 +18,11 @@ try {
 
 if (typeof handler !== 'function') {
   console.error('[dev-server] Loaded API handler is not a function.');
+  process.exit(1);
+}
+
+if (typeof documentsHandler !== 'function') {
+  console.error('[dev-server] Loaded documents API handler is not a function.');
   process.exit(1);
 }
 
@@ -74,6 +83,12 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/api/file-stores') {
     attachResponseHelpers(res);
     void handler(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/documents') {
+    attachResponseHelpers(res);
+    void documentsHandler(req, res);
     return;
   }
 
