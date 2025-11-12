@@ -6,7 +6,7 @@ import {
   resolveStaffForRequest,
 } from '../lib/api-auth';
 import { getSupabaseClientWithToken } from '../lib/supabaseClient';
-import { GeminiApiError, createFileStore, sanitizeStoreId } from '../lib/gemini';
+import { GeminiApiError, createFileStore } from '../lib/gemini';
 
 function applyCors(req: VercelRequest, res: VercelResponse) {
   const origin = (req.headers.origin as string | undefined) || '';
@@ -169,12 +169,7 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
 
   const description = typeof body.description === 'string' ? body.description : null;
 
-  const requestedStoreId =
-    typeof body.geminiStoreId === 'string' && body.geminiStoreId.trim()
-      ? sanitizeStoreId(body.geminiStoreId.trim(), displayName)
-      : sanitizeStoreId(displayName);
-
-  const store = await createFileStore(displayName, { storeId: requestedStoreId });
+  const store = await createFileStore(displayName);
 
   if (!store.storeName) {
     console.error('Gemini did not return a store name.');

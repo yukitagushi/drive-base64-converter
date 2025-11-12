@@ -1065,7 +1065,8 @@ async function bootstrapAfterAuth(options = {}) {
   }
   hasBootstrapped = true;
   await loadSession();
-  await Promise.all([loadStores({ force: true }), loadDocuments()]);
+  await loadStores({ force: true });
+  await loadDocuments();
 }
 
 function openAuthDialog(mode = 'login') {
@@ -1915,19 +1916,9 @@ async function loadDocuments() {
     renderDocuments([]);
     return;
   }
-  try {
-    const data = await safeFetch('/api/documents');
-    if (data?.error) throw new Error(data.error || 'ドキュメントの取得に失敗しました');
-    const list = Array.isArray(data.documents) ? data.documents : Array.isArray(data.items) ? data.items : null;
-    renderDocuments(list);
-  } catch (error) {
-    console.error(error);
-    if (typeof error.message === 'string' && error.message.includes('fileStoreId')) {
-      renderDocuments([]);
-      return;
-    }
-    documentList.innerHTML = '<p class="form-error">ドキュメントを読み込めませんでした。</p>';
-  }
+
+  // ファイル検索用のストアはカード上から個別に読み込み、ここではサンプルノートを表示します。
+  renderDocuments([]);
 }
 
 async function loadStores(options = {}) {

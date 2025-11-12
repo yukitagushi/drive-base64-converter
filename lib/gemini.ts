@@ -190,17 +190,12 @@ function parsePayload(raw: string): any {
 }
 
 export async function createFileStore(
-  displayName: string,
-  options: { storeId?: string | null } = {}
+  displayName: string
 ): Promise<GeminiStoreResult> {
   const label = typeof displayName === 'string' ? displayName.trim() : '';
   const body: Record<string, string> = {};
   if (label) {
     body.displayName = label;
-  }
-  const sanitizedId = options.storeId ? sanitizeStoreId(options.storeId, label) : null;
-  if (sanitizedId) {
-    body.fileSearchStoreId = sanitizedId;
   }
 
   const url = `${GEMINI_API_BASE}/fileSearchStores`;
@@ -214,19 +209,6 @@ export async function createFileStore(
 
   const raw = await response.text();
   const payload = parsePayload(raw);
-
-  if (response.status === 409) {
-    const fallbackName = sanitizedId ? `fileSearchStores/${sanitizedId}` : null;
-    console.warn('Gemini store already exists – treating as success.', {
-      store: fallbackName,
-    });
-    return {
-      storeName: fallbackName || '',
-      displayName: label || sanitizedId || '',
-      createTime: null,
-      updateTime: null,
-    };
-  }
 
   if (!response.ok) {
     const message = extractErrorMessage(payload, 'Gemini ストアの作成に失敗しました。');
@@ -244,8 +226,11 @@ export async function createFileStore(
   }
 
   const result = normalizeStore(payload as GeminiStoreResponse);
-  if (!result.storeName && sanitizedId) {
-    result.storeName = `fileSearchStores/${sanitizedId}`;
+  if (!result.storeName) {
+    throw new GeminiApiError('Gemini ストアの作成結果に識別子が含まれていません。', {
+      status: response.status,
+      body: payload,
+    });
   }
 
   console.info('Gemini store created:', {
@@ -258,9 +243,9 @@ export async function createFileStore(
 
 export async function createFileStoreIfNeeded(
   displayName: string,
-  options: { storeId?: string | null } = {}
+  _options: { storeId?: string | null } = {}
 ): Promise<GeminiStoreResult> {
-  return createFileStore(displayName, options);
+  return createFileStore(displayName);
 }
 
 export async function uploadFileToStore(options: {
