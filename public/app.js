@@ -334,8 +334,18 @@ function formatHttpError(error, fallbackMessage) {
   }
   const message = error?.message || fallbackMessage;
   const status = error?.status;
+  const source = error?.body?.source;
+  const prefixParts = [];
+  if (source === 'gemini') {
+    prefixParts.push('Gemini');
+  } else if (source === 'api') {
+    prefixParts.push('API');
+  }
   if (status) {
-    return `(${status}) ${message}`;
+    prefixParts.push(String(status));
+  }
+  if (prefixParts.length) {
+    return `(${prefixParts.join(' / ')}) ${message}`;
   }
   return message;
 }

@@ -8,6 +8,20 @@ import {
 import { getSupabaseClientWithToken } from '../lib/supabaseClient';
 import { GeminiApiError, createFileStore, sanitizeStoreId } from '../lib/gemini';
 
+function applyCors(req: VercelRequest, res: VercelResponse) {
+  const origin = (req.headers.origin as string | undefined) || '';
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization,Content-Type,Accept');
+}
+
+function respond(res: VercelResponse, status: number, payload: Record<string, any>) {
+  res.status(status).json({ source: 'api', status, ...payload });
+}
+
 function firstValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) {
     return value[0];
@@ -16,6 +30,11 @@ function firstValue(value: string | string[] | undefined): string | undefined {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  applyCors(req, res);
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
   try {
     if (req.method === 'GET') {
       await handleGet(req, res);
@@ -27,21 +46,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    res.setHeader('Allow', 'GET, POST');
-    res.status(405).json({ error: 'Method Not Allowed', status: 405 });
+    res.setHeader('Allow', 'GET,POST,OPTIONS');
+    respond(res, 405, { error: 'Method Not Allowed' });
   } catch (error: any) {
     console.error('Error in /api/file-stores:', error);
     if (handleKnownError(res, error)) {
       return;
     }
-    res.status(500).json({ error: error?.message || 'Internal Server Error', status: 500 });
+    respond(res, 500, { error: error?.message || 'Internal Server Error' });
   }
 }
 
 async function handleGet(req: VercelRequest, res: VercelResponse) {
   const token = getSupabaseBearerToken(req);
   if (!token) {
-    res.status(401).json({ error: '認証が必要です。', status: 401 });
+    respond(res, 401, { error: '認証が必要です。' });
     return;
   }
 
@@ -49,7 +68,7 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
   const admin = getSupabaseAdmin();
   const staff = await resolveStaffForRequest(admin, req);
   if (!staff) {
-    res.status(403).json({ error: 'スタッフ情報が見つかりません。', status: 403 });
+    respond(res, 403, { error: 'スタッフ情報が見つかりません。' });
     return;
   }
 
@@ -118,7 +137,7 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
 async function handlePost(req: VercelRequest, res: VercelResponse) {
   const token = getSupabaseBearerToken(req);
   if (!token) {
-    res.status(401).json({ error: '認証が必要です。', status: 401 });
+    respond(res, 401, { error: '認証が必要です。' });
     return;
   }
 
@@ -132,19 +151,19 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
       body = req.body;
     }
   } catch (error: any) {
-    res.status(400).json({ error: 'JSON 形式で送信してください。', status: 400 });
+    respond(res, 400, { error: 'JSON 形式で送信してください。' });
     return;
   }
   const staff = await resolveStaffForRequest(admin, req);
 
   if (!staff?.officeId) {
-    res.status(403).json({ error: '事業所に紐づいたスタッフ情報が見つかりません。', status: 403 });
+    respond(res, 403, { error: '事業所に紐づいたスタッフ情報が見つかりません。' });
     return;
   }
 
   const displayName = String(body.displayName || '').trim();
   if (!displayName) {
-    res.status(400).json({ error: 'displayName は必須です。', status: 400 });
+    respond(res, 400, { error: 'displayName は必須です。' });
     return;
   }
 
@@ -176,7 +195,7 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
   if (error) {
     console.error('Supabase store insert error:', error.message);
     if (error.code === '23505') {
-      res.status(409).json({ error: '同じストアがすでに存在します。', status: 409 });
+      respond(res, 409, { error: '同じストアがすでに存在します。' });
       return;
     }
     throw new Error(error.message);
@@ -202,6 +221,7 @@ function handleKnownError(res: VercelResponse, error: any): boolean {
   if (error instanceof GeminiApiError) {
     const status = error.status ?? 500;
     res.status(status).json({
+      source: 'gemini',
       error: error.message,
       status,
       debugId: error.debugId ?? null,
