@@ -154,9 +154,17 @@ export async function uploadFileToStore(options: {
     metadata.description = options.description;
   }
 
+  const fileBytes = Buffer.isBuffer(options.fileBuffer)
+    ? new Uint8Array(options.fileBuffer)
+    : options.fileBuffer;
+
   const form = new FormData();
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-  form.append('file', new Blob([options.fileBuffer], { type: options.mimeType || 'application/octet-stream' }), options.displayName || 'document');
+  form.append(
+    'file',
+    new Blob([fileBytes], { type: options.mimeType || 'application/octet-stream' }),
+    options.displayName || 'document'
+  );
 
   const response = await geminiFetch(
     `${GEMINI_UPLOAD_BASE}/${encodePath(storeName)}/files:upload?uploadType=multipart`,
