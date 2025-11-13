@@ -679,7 +679,12 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
       catchContext.mimeType = normalizedMimeForCatch;
     }
     logGeminiError('handlePost failed', error, catchContext);
-    respond(res, 500, { error: 'upload_failed', geminiError: serializeGeminiError(error) });
+    const serializedError = serializeGeminiError(error);
+    if (error instanceof GeminiApiError && error.status === 404) {
+      respond(res, 400, { error: 'file_store_not_found', geminiError: serializedError });
+      return;
+    }
+    respond(res, 500, { error: 'upload_failed', geminiError: serializedError });
   }
 }
 

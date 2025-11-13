@@ -354,6 +354,8 @@ export async function uploadFileToStore(options: {
   }
 
   const storeResource = ensureStoreResourceName(options.storeName, options.displayName);
+  const normalizedStoreResource = storeResource.replace(/\/+$/, '');
+  const uploadResourcePath = `${normalizedStoreResource}/files`;
 
   const metadata: Record<string, string> = {};
   if (options.displayName) {
@@ -378,7 +380,7 @@ export async function uploadFileToStore(options: {
   );
 
   const apiKey = ensureApiKey();
-  const uploadUrl = `${GEMINI_UPLOAD_BASE}/${encodePath(storeResource)}:uploadToFileSearchStore?uploadType=multipart&key=${encodeURIComponent(
+  const uploadUrl = `${GEMINI_UPLOAD_BASE}/${encodePath(uploadResourcePath)}:upload?uploadType=multipart&key=${encodeURIComponent(
     apiKey
   )}`;
   const uploadResponse = await fetch(uploadUrl, {
@@ -399,11 +401,21 @@ export async function uploadFileToStore(options: {
       status: uploadResponse.status,
       body: typeof uploadText === 'string' ? uploadText.slice(0, 512) : uploadText,
       debugId,
+      storeResource: normalizedStoreResource,
+      uploadUrl,
     });
-    throw new GeminiApiError(message, {
+    const enrichedMessage =
+      uploadResponse.status === 404
+        ? `Gemini File Search ストア (${normalizedStoreResource}) が見つかりません。`
+        : message;
+    throw new GeminiApiError(enrichedMessage, {
       status: uploadResponse.status,
       debugId,
-      body: uploadPayload,
+      body: {
+        payload: uploadPayload,
+        storeResource: normalizedStoreResource,
+        uploadUrl,
+      },
     });
   }
 
@@ -422,7 +434,8 @@ export async function uploadFileToStore(options: {
     uri: result.geminiFileUri,
     displayName: result.displayName,
     sizeBytes: result.sizeBytes,
-    store: storeResource,
+    store: normalizedStoreResource,
+    uploadUrl,
   });
 
   return result;
