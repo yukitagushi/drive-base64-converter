@@ -393,6 +393,24 @@ export async function uploadFileToStore(options: {
       storeResource: normalizedStoreResource,
       uploadUrl,
     });
+
+    if (uploadResponse.status >= 500) {
+      console.error('Gemini file upload encountered a server-side error. Continuing without File Search registration.', {
+        status: uploadResponse.status,
+        storeResource: normalizedStoreResource,
+        uploadUrl,
+      });
+      return {
+        geminiFileName: '',
+        geminiFileUri: null,
+        displayName: options.displayName || '',
+        mimeType: options.mimeType || null,
+        sizeBytes: options.fileBuffer.length,
+        createTime: null,
+        updateTime: null,
+      };
+    }
+
     const enrichedMessage =
       uploadResponse.status === 404
         ? `Gemini File Search ストア (${normalizedStoreResource}) が見つかりません。`

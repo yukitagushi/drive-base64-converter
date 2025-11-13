@@ -124,6 +124,7 @@ const STORE_ONLY_MIME_TYPES = new Set([
 
 const STORE_ONLY_EXTENSIONS = new Set(['zip', 'xlsx', 'xls', 'xlsm', 'xlsb']);
 
+const GEMINI_STORE_FAILURE_NOTE = 'Gemini File Search 登録に失敗しましたが、ファイルは保存されました。';
 const GEMINI_ANALYSIS_FAILURE_NOTE = 'Gemini 解析に失敗しましたが、ファイルは保存しました。';
 
 function getExtension(filename?: string | null): string {
@@ -860,6 +861,11 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
   const gemini: GeminiFileUploadResult[] = [];
   const analyses: GeminiMediaAnalysisResult[] = [];
   const notes: string[] = [];
+  const pushNote = (note: string) => {
+    if (note && !notes.includes(note)) {
+      notes.push(note);
+    }
+  };
 
   const extension = getExtension(context.originalFilename || context.displayName);
   const normalizedMime = resolveMimeType({
@@ -891,6 +897,9 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
     });
     items.push(result.record);
     gemini.push(result.gemini);
+    if (!result.gemini.geminiFileName) {
+      pushNote(GEMINI_STORE_FAILURE_NOTE);
+    }
     return result;
   };
 
@@ -955,8 +964,9 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       displayName: context.displayName,
       mimeType: normalizedMime,
     });
+    const canAnalyzeStored = Boolean(original.gemini.geminiFileName);
 
-    if (!analysis) {
+    if (!analysis && canAnalyzeStored) {
       try {
         analysis = await analyzeFileWithGemini({
           geminiFileName: original.gemini.geminiFileName,
@@ -977,19 +987,21 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
     if (analysis) {
       analyses.push(analysis);
 
-      const summaryText = createMediaAnalysisSummary(context.originalFilename, analysis);
-      const summaryName = `${stripExtension(context.displayName || context.originalFilename) || context.displayName}-analysis.txt`;
+      if (canAnalyzeStored) {
+        const summaryText = createMediaAnalysisSummary(context.originalFilename, analysis);
+        const summaryName = `${stripExtension(context.displayName || context.originalFilename) || context.displayName}-analysis.txt`;
 
-      await upload({
-        buffer: Buffer.from(summaryText, 'utf8'),
-        displayName: summaryName,
-        mimeType: 'text/plain; charset=utf-8',
-        extraDescription: 'Gemini によるメディア解析テキストです。',
-      });
+        await upload({
+          buffer: Buffer.from(summaryText, 'utf8'),
+          displayName: summaryName,
+          mimeType: 'text/plain; charset=utf-8',
+          extraDescription: 'Gemini によるメディア解析テキストです。',
+        });
 
-      notes.push('Gemini がメディアを解析しテキストを生成しました。');
+        pushNote('Gemini がメディアを解析しテキストを生成しました。');
+      }
     } else if (analysisFailed) {
-      notes.push(GEMINI_ANALYSIS_FAILURE_NOTE);
+      pushNote(GEMINI_ANALYSIS_FAILURE_NOTE);
     }
   } else if (!shouldBypassMediaEnrichment && isVideoMime(normalizedMime)) {
     const original = await upload({
@@ -997,38 +1009,43 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       displayName: context.displayName,
       mimeType: normalizedMime,
     });
+    const canAnalyzeStored = Boolean(original.gemini.geminiFileName);
 
     let analysis: GeminiMediaAnalysisResult | null = null;
-    try {
-      analysis = await analyzeFileWithGemini({
-        geminiFileName: original.gemini.geminiFileName,
-        geminiFileUri: original.gemini.geminiFileUri,
-        mimeType: normalizedMime,
-      });
-    } catch (error: any) {
-      logGeminiError('Gemini stored media analysis failed for video.', error, {
-        geminiFileName: original.gemini.geminiFileName,
-        geminiFileUri: original.gemini.geminiFileUri,
-        mimeType: normalizedMime,
-      });
+    if (canAnalyzeStored) {
+      try {
+        analysis = await analyzeFileWithGemini({
+          geminiFileName: original.gemini.geminiFileName,
+          geminiFileUri: original.gemini.geminiFileUri,
+          mimeType: normalizedMime,
+        });
+      } catch (error: any) {
+        logGeminiError('Gemini stored media analysis failed for video.', error, {
+          geminiFileName: original.gemini.geminiFileName,
+          geminiFileUri: original.gemini.geminiFileUri,
+          mimeType: normalizedMime,
+        });
+      }
     }
 
     if (analysis) {
       analyses.push(analysis);
 
-      const summaryText = createMediaAnalysisSummary(context.originalFilename, analysis);
-      const summaryName = `${stripExtension(context.displayName || context.originalFilename) || context.displayName}-analysis.txt`;
+      if (canAnalyzeStored) {
+        const summaryText = createMediaAnalysisSummary(context.originalFilename, analysis);
+        const summaryName = `${stripExtension(context.displayName || context.originalFilename) || context.displayName}-analysis.txt`;
 
-      await upload({
-        buffer: Buffer.from(summaryText, 'utf8'),
-        displayName: summaryName,
-        mimeType: 'text/plain; charset=utf-8',
-        extraDescription: 'Gemini によるメディア解析テキストです。',
-      });
+        await upload({
+          buffer: Buffer.from(summaryText, 'utf8'),
+          displayName: summaryName,
+          mimeType: 'text/plain; charset=utf-8',
+          extraDescription: 'Gemini によるメディア解析テキストです。',
+        });
 
-      notes.push('Gemini がメディアを解析しテキストを生成しました。');
-    } else {
-      notes.push(GEMINI_ANALYSIS_FAILURE_NOTE);
+        pushNote('Gemini がメディアを解析しテキストを生成しました。');
+      }
+    } else if (canAnalyzeStored) {
+      pushNote(GEMINI_ANALYSIS_FAILURE_NOTE);
     }
   } else {
     await upload({
@@ -1037,7 +1054,7 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       mimeType: normalizedMime,
     });
     if (shouldBypassMediaEnrichment && (isZipType(normalizedMime, extension) || STORE_ONLY_EXTENSIONS.has(extension))) {
-      notes.push('Gemini File Search 用にファイルをそのまま保存しました。');
+      pushNote('Gemini File Search 用にファイルをそのまま保存しました。');
     }
   }
 
