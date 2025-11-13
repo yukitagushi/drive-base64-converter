@@ -650,8 +650,17 @@ async function handleJsonUpload(
     return null;
   }
 
-  const arrayBuffer = await downloadData.arrayBuffer();
-  const fileBuffer = Buffer.from(arrayBuffer);
+  let fileBuffer: Buffer;
+  try {
+    fileBuffer = await bufferFromUnknown(downloadData);
+  } catch (error: any) {
+    respond(res, 500, {
+      error:
+        error?.message ||
+        'Supabase ストレージから取得したファイルを処理できませんでした。',
+    });
+    return null;
+  }
 
   if (!fileBuffer.length) {
     respond(res, 400, { error: 'アップロードされたファイルに内容がありません。' });
@@ -1340,6 +1349,79 @@ async function readRequestBody(req: VercelRequest): Promise<Buffer> {
     chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
   }
   return Buffer.concat(chunks);
+}
+
+async function bufferFromUnknown(value: any): Promise<Buffer> {
+  if (!value) {
+    return Buffer.alloc(0);
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return Buffer.from(value);
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
+
+  if (typeof value === 'string') {
+    return Buffer.from(value);
+  }
+
+  if (typeof value.arrayBuffer === 'function') {
+    const arrayBuffer = await value.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+
+  if (typeof value.text === 'function') {
+    const text = await value.text();
+    return Buffer.from(text);
+  }
+
+  if (typeof value.stream === 'function') {
+    const stream = value.stream();
+    if (stream && typeof stream.getReader === 'function') {
+      const reader = stream.getReader();
+      const parts: Buffer[] = [];
+      while (true) {
+        const { value: chunk, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (chunk) {
+          parts.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+      }
+      return Buffer.concat(parts);
+    }
+  }
+
+  if (typeof value[Symbol.asyncIterator] === 'function') {
+    const parts: Buffer[] = [];
+    for await (const chunk of value as AsyncIterable<any>) {
+      if (!chunk) {
+        continue;
+      }
+      if (Buffer.isBuffer(chunk)) {
+        parts.push(chunk);
+      } else if (chunk instanceof ArrayBuffer) {
+        parts.push(Buffer.from(chunk));
+      } else if (ArrayBuffer.isView(chunk)) {
+        parts.push(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+      } else if (typeof chunk === 'string') {
+        parts.push(Buffer.from(chunk));
+      } else {
+        parts.push(Buffer.from(chunk as any));
+      }
+    }
+    return Buffer.concat(parts);
+  }
+
+  throw new Error('サポートされていないデータ形式です。');
 }
 
 async function classifyStoreAccess(admin: any, fileStoreId: string, staffOfficeId: string | null) {
