@@ -10,6 +10,7 @@ import {
 import { getSupabaseClientWithToken } from '../lib/supabaseClient';
 import {
   analyzeFileWithGemini,
+  analyzeInlineMediaWithGemini,
   GeminiApiError,
   uploadFileToStore,
   type GeminiFileUploadResult,
@@ -721,7 +722,50 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
     }
 
     notes.push('ZIP アーカイブを展開してテキスト化しました。');
-  } else if (isImageMime(normalizedMime) || isVideoMime(normalizedMime)) {
+  } else if (isImageMime(normalizedMime)) {
+    let analysis: GeminiMediaAnalysisResult | null = null;
+    try {
+      analysis = await analyzeInlineMediaWithGemini({
+        buffer: context.fileBuffer,
+        mimeType: normalizedMime,
+      });
+    } catch (error: any) {
+      console.warn('Gemini inline media analysis failed. Falling back to stored file workflow.', {
+        error: error instanceof Error ? error.message : error,
+      });
+    }
+
+    const original = await upload({
+      buffer: context.fileBuffer,
+      displayName: context.displayName,
+      mimeType: normalizedMime,
+    });
+
+    if (!analysis) {
+      analysis = await analyzeFileWithGemini({
+        geminiFileName: original.gemini.geminiFileName,
+        mimeType: normalizedMime,
+      });
+    }
+
+    if (!analysis) {
+      throw new Error('Gemini メディア解析に失敗しました。');
+    }
+
+    analyses.push(analysis);
+
+    const summaryText = createMediaAnalysisSummary(context.originalFilename, analysis);
+    const summaryName = `${stripExtension(context.displayName || context.originalFilename) || context.displayName}-analysis.txt`;
+
+    await upload({
+      buffer: Buffer.from(summaryText, 'utf8'),
+      displayName: summaryName,
+      mimeType: 'text/plain; charset=utf-8',
+      extraDescription: 'Gemini によるメディア解析テキストです。',
+    });
+
+    notes.push('Gemini がメディアを解析しテキストを生成しました。');
+  } else if (isVideoMime(normalizedMime)) {
     const original = await upload({
       buffer: context.fileBuffer,
       displayName: context.displayName,

@@ -358,21 +358,55 @@ function normalizeModelId(value?: string | null): string | null {
   return trimmed.startsWith('models/') ? trimmed : `models/${trimmed}`;
 }
 
+const INLINE_MEDIA_MAX_BYTES = 20 * 1024 * 1024; // 20MB safety cap for inline Gemini requests
+
+function toBuffer(data: Buffer | ArrayBuffer | ArrayBufferView | ArrayLike<number>): Buffer {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+  if (ArrayBuffer.isView(data)) {
+    const view = data as ArrayBufferView;
+    return Buffer.from(view.buffer, view.byteOffset, view.byteLength);
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(new Uint8Array(data));
+  }
+  if (typeof (data as ArrayLike<number>)?.length === 'number') {
+    return Buffer.from(data as ArrayLike<number>);
+  }
+  throw new Error('Gemini に渡すメディアデータをバッファに変換できません。');
+}
+
+type GeminiMediaSource =
+  | {
+      kind: 'file';
+      fileName: string;
+      mimeType?: string;
+    }
+  | {
+      kind: 'inline';
+      base64Data: string;
+      mimeType: string;
+    };
+
 function buildMediaPromptParts({
-  fileName,
-  mimeType,
+  media,
   prompt,
 }: {
-  fileName: string;
-  mimeType?: string;
+  media: GeminiMediaSource;
   prompt: string;
 }) {
   const parts: any[] = [];
-  const fileData: Record<string, string> = { fileUri: fileName };
-  if (mimeType && mimeType.trim()) {
-    fileData.mimeType = mimeType.trim();
+  if (media.kind === 'file') {
+    const fileData: Record<string, string> = { fileUri: media.fileName };
+    if (media.mimeType && media.mimeType.trim()) {
+      fileData.mimeType = media.mimeType.trim();
+    }
+    parts.push({ fileData });
+  } else {
+    parts.push({ inlineData: { data: media.base64Data, mimeType: media.mimeType } });
   }
-  parts.push({ fileData });
+
   if (prompt) {
     parts.push({ text: prompt });
   }
@@ -401,20 +435,18 @@ function shouldRetryModel(error: any): boolean {
 
 async function invokeMediaAnalysis({
   model,
-  fileName,
-  mimeType,
+  media,
   prompt,
 }: {
   model: string;
-  fileName: string;
-  mimeType?: string;
+  media: GeminiMediaSource;
   prompt: string;
 }): Promise<GeminiMediaAnalysisResult> {
   const requestBody = {
     contents: [
       {
         role: 'user',
-        parts: buildMediaPromptParts({ fileName, mimeType, prompt }),
+        parts: buildMediaPromptParts({ media, prompt }),
       },
     ],
   };
@@ -439,6 +471,7 @@ async function invokeMediaAnalysis({
       body: typeof raw === 'string' ? raw.slice(0, 512) : raw,
       debugId,
       model,
+      media,
     });
     throw new GeminiApiError(`${message} (${response.status})`, {
       status: response.status,
@@ -505,8 +538,11 @@ export async function analyzeFileWithGemini(options: {
     try {
       return await invokeMediaAnalysis({
         model: candidate,
-        fileName,
-        mimeType: options.mimeType,
+        media: {
+          kind: 'file',
+          fileName,
+          mimeType: options.mimeType,
+        },
         prompt,
       });
     } catch (error: any) {
@@ -515,6 +551,74 @@ export async function analyzeFileWithGemini(options: {
         throw error;
       }
       console.warn(`Gemini モデル ${candidate} での解析に失敗しました。フォールバックを試します。`, {
+        error: error instanceof Error ? error.message : error,
+      });
+      continue;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error('利用可能な Gemini モデルが選択されていません。');
+}
+
+export async function analyzeInlineMediaWithGemini(options: {
+  buffer: Buffer | ArrayBuffer | ArrayBufferView | ArrayLike<number>;
+  mimeType: string;
+  prompt?: string;
+  model?: string;
+  modelFallbacks?: string[];
+  maxBytes?: number;
+}): Promise<GeminiMediaAnalysisResult> {
+  const mimeType = String(options.mimeType || '').trim();
+  if (!mimeType) {
+    throw new Error('Gemini に渡すメディアの MIME タイプが指定されていません。');
+  }
+
+  const buffer = toBuffer(options.buffer);
+  if (!buffer.length) {
+    throw new Error('Gemini に渡すメディアデータが空です。');
+  }
+
+  const limit = typeof options.maxBytes === 'number' ? options.maxBytes : INLINE_MEDIA_MAX_BYTES;
+  if (buffer.length > limit) {
+    throw new Error(`Gemini に渡すメディアデータが大きすぎます。(最大 ${limit} バイト)`);
+  }
+
+  const base64Data = buffer.toString('base64');
+  const prompt =
+    options.prompt?.trim() ||
+    'このメディアの内容を要約し、重要なポイントと推奨アクションを日本語で提示してください。';
+
+  const preferred = normalizeModelId(options.model);
+  const fallbackList = (options.modelFallbacks || []).map((model) => normalizeModelId(model)).filter(Boolean) as string[];
+  const orderedModels = preferred
+    ? [preferred, ...fallbackList]
+    : [...getDefaultModelOrder(mimeType), ...fallbackList];
+
+  let lastError: any = null;
+  for (const candidate of orderedModels) {
+    if (!candidate) {
+      continue;
+    }
+    try {
+      return await invokeMediaAnalysis({
+        model: candidate,
+        media: {
+          kind: 'inline',
+          base64Data,
+          mimeType,
+        },
+        prompt,
+      });
+    } catch (error: any) {
+      lastError = error;
+      if (!shouldRetryModel(error)) {
+        throw error;
+      }
+      console.warn(`Gemini モデル ${candidate} でのインライン解析に失敗しました。フォールバックを試します。`, {
         error: error instanceof Error ? error.message : error,
       });
       continue;
