@@ -1,17 +1,60 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getSupabaseAdmin } from '../lib/supabaseAdmin';
 import {
   getSupabaseBearerToken,
   resolveStaffForRequest,
   isSupabaseConfigured,
 } from '../lib/api-auth';
-import { GeminiApiError, ensureGeminiEnvironment } from '../lib/gemini';
+import { getSupabaseAdmin } from '../lib/supabaseAdmin';
+import {
+  GeminiApiError,
+  ensureGeminiEnvironment,
+  generateChatResponse,
+  type GeminiChatMessage,
+} from '../lib/gemini';
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { GeminiKnowledgeBase } = require('../lib/gemini.js');
+interface StaffContext {
+  id: string;
+  officeId: string | null;
+  organizationId: string | null;
+}
 
-const knowledgeBase = new GeminiKnowledgeBase({});
-let knowledgeInit: Promise<void> | null = null;
+interface ThreadRow {
+  id: string;
+  office_id: string | null;
+  staff_id: string | null;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface MessageRow {
+  id: string;
+  thread_id: string;
+  role: string;
+  content: string;
+  metadata: any;
+  created_at: string;
+}
+
+interface ThreadSummary {
+  id: string;
+  officeId: string | null;
+  staffId: string | null;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface InsertMessageParams {
+  admin: ReturnType<typeof getSupabaseAdmin>;
+  threadId: string;
+  staffId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  metadata?: Record<string, any> | null;
+}
+
+const DEFAULT_ASSISTANT_FALLBACK = '申し訳ありませんが、回答を生成できませんでした。';
 
 function applyCors(req: VercelRequest, res: VercelResponse) {
   const origin = (req.headers.origin as string | undefined) || '';
@@ -67,46 +110,19 @@ function serializeGeminiError(error: unknown): Record<string, any> {
   return { value: error };
 }
 
-async function ensureKnowledgeReady() {
-  if (!knowledgeInit) {
-    knowledgeInit = knowledgeBase.init();
-  }
-  try {
-    await knowledgeInit;
-  } catch (error) {
-    knowledgeInit = null;
-    throw error;
-  }
-}
-
 function generateThreadTitle(text: string): string {
   if (!text) {
-    return '新しい質問';
+    return '新しい会話';
   }
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (!normalized) {
-    return '新しい質問';
+    return '新しい会話';
   }
-  const snippet = normalized.slice(0, 28);
-  return normalized.length > 28 ? `${snippet}…` : snippet;
+  const snippet = normalized.slice(0, 40);
+  return normalized.length > 40 ? `${snippet}…` : snippet;
 }
 
-interface StaffContext {
-  id: string;
-  officeId: string | null;
-  organizationId: string | null;
-}
-
-interface ThreadRow {
-  id: string;
-  office_id: string | null;
-  staff_id: string | null;
-  title: string;
-  created_at: string;
-  updated_at: string;
-}
-
-function mapThread(row: ThreadRow) {
+function mapThreadRow(row: ThreadRow): ThreadSummary {
   return {
     id: row.id,
     officeId: row.office_id,
@@ -122,7 +138,7 @@ async function ensureThread(
   staff: StaffContext,
   requestedThreadId: string | null,
   title: string
-) {
+): Promise<ThreadSummary | null> {
   if (!staff.officeId) {
     return null;
   }
@@ -133,11 +149,13 @@ async function ensureThread(
       .select('id, office_id, staff_id, title, created_at, updated_at')
       .eq('id', requestedThreadId)
       .maybeSingle();
+
     if (error) {
       throw new Error(error.message);
     }
+
     if (data && data.office_id === staff.officeId) {
-      return mapThread(data as ThreadRow);
+      return mapThreadRow(data as ThreadRow);
     }
   }
 
@@ -146,7 +164,7 @@ async function ensureThread(
     .insert({
       office_id: staff.officeId,
       staff_id: staff.id,
-      title: title || '新しい質問',
+      title: title || '新しい会話',
     })
     .select('id, office_id, staff_id, title, created_at, updated_at')
     .single();
@@ -155,86 +173,86 @@ async function ensureThread(
     throw new Error(error.message);
   }
 
-  return mapThread(data as ThreadRow);
+  return mapThreadRow(data as ThreadRow);
 }
 
-async function recordMessages(options: {
-  admin: ReturnType<typeof getSupabaseAdmin>;
-  threadId: string;
-  staffId: string;
-  question: string;
-  answer: string;
-  context: any;
-}) {
-  const { admin, threadId, staffId, question, answer, context } = options;
-  const rows = [
-    {
-      thread_id: threadId,
-      author_staff_id: staffId,
-      role: 'user',
-      content: question,
-      metadata: { kind: 'question' },
-    },
-    {
-      thread_id: threadId,
-      author_staff_id: staffId,
-      role: 'assistant',
-      content: answer,
-      metadata: { kind: 'answer', context },
-    },
-  ];
+async function insertMessage(params: InsertMessageParams): Promise<MessageRow> {
+  const payload = {
+    thread_id: params.threadId,
+    author_staff_id: params.staffId,
+    role: params.role,
+    content: params.content,
+    metadata: params.metadata ?? null,
+  };
 
-  const { error } = await admin.from('chat_messages').insert(rows);
+  const { data, error } = await params.admin
+    .from('chat_messages')
+    .insert(payload)
+    .select('id, thread_id, role, content, metadata, created_at')
+    .single();
+
   if (error) {
     throw new Error(error.message);
   }
 
-  await admin
-    .from('chat_threads')
-    .update({ updated_at: new Date().toISOString() })
-    .eq('id', threadId);
+  return data as MessageRow;
 }
 
-async function fetchThreadSummaries(
-  admin: ReturnType<typeof getSupabaseAdmin>,
-  officeId: string,
-  focusThreadId?: string | null
-) {
+async function loadThreadMessages(admin: ReturnType<typeof getSupabaseAdmin>, threadId: string): Promise<MessageRow[]> {
   const { data, error } = await admin
-    .from('chat_thread_summaries')
-    .select('id, office_id, staff_id, title, created_at, updated_at, last_message')
-    .eq('office_id', officeId)
-    .order('updated_at', { ascending: false })
-    .limit(20);
+    .from('chat_messages')
+    .select('id, thread_id, role, content, metadata, created_at')
+    .eq('thread_id', threadId)
+    .order('created_at', { ascending: true });
 
   if (error) {
     throw new Error(error.message);
   }
 
-  const items = (data || []).map((row: any) => ({
-    id: row.id,
-    officeId: row.office_id,
-    staffId: row.staff_id,
-    title: row.title,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    lastMessage: row.last_message || null,
-  }));
-
-  const focus = focusThreadId ? items.find((item) => item.id === focusThreadId) || null : null;
-  return { items, focus };
+  return (data || []) as MessageRow[];
 }
 
-function normalizeHistory(raw: any): Array<{ role: string; content: string }> {
-  if (!Array.isArray(raw)) {
-    return [];
+function mapMessageResponse(row: MessageRow) {
+  return {
+    id: row.id,
+    role: row.role,
+    content: row.content,
+    metadata: row.metadata ?? null,
+    createdAt: row.created_at,
+  };
+}
+
+function toGeminiMessages(rows: MessageRow[]): GeminiChatMessage[] {
+  return rows
+    .map((row) => {
+      const role = row.role === 'assistant' ? 'assistant' : row.role === 'system' ? 'system' : 'user';
+      return {
+        role,
+        content: row.content,
+      } as GeminiChatMessage;
+    })
+    .filter((message) => Boolean(message.content));
+}
+
+async function touchThread(admin: ReturnType<typeof getSupabaseAdmin>, threadId: string) {
+  try {
+    await admin
+      .from('chat_threads')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', threadId);
+  } catch (error) {
+    console.warn('Failed to update chat thread timestamp:', error);
   }
-  return raw
-    .map((entry) => ({
-      role: typeof entry?.role === 'string' ? entry.role : 'user',
-      content: typeof entry?.content === 'string' ? entry.content : '',
-    }))
-    .filter((entry) => entry.content);
+}
+
+function parseBody(req: VercelRequest): any {
+  if (typeof req.body === 'string') {
+    return req.body ? JSON.parse(req.body) : {};
+  }
+  if (req.body && typeof req.body === 'object') {
+    return req.body;
+  }
+  return {};
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -252,42 +270,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     let body: any = {};
-    if (typeof req.body === 'string') {
-      body = req.body ? JSON.parse(req.body) : {};
-    } else if (req.body && typeof req.body === 'object') {
-      body = req.body;
-    }
-
-    const query = typeof body.query === 'string' ? body.query.trim() : '';
-    if (!query) {
-      respond(res, 400, { error: 'query は必須です。' });
+    try {
+      body = parseBody(req);
+    } catch (error: any) {
+      respond(res, 400, { error: '無効な JSON です。' });
       return;
     }
 
-    await ensureKnowledgeReady();
-    if (!knowledgeBase.isReady) {
-      respond(res, 503, { error: 'ナレッジベースの初期化が完了していません。' });
+    const message = typeof body.message === 'string' ? body.message.trim() : '';
+    if (!message) {
+      respond(res, 400, { error: 'message は必須です。' });
       return;
     }
 
-    const history = normalizeHistory(body.history);
-    const supabaseEnabled = isSupabaseConfigured();
+    const requestedThreadId = typeof body.threadId === 'string' ? body.threadId.trim() || null : null;
+
+    if (!isSupabaseConfigured()) {
+      respond(res, 503, { error: 'Supabase が設定されていません。' });
+      return;
+    }
+
     const token = getSupabaseBearerToken(req);
-    const admin = supabaseEnabled ? getSupabaseAdmin() : null;
-    const staff = supabaseEnabled && admin ? await resolveStaffForRequest(admin, req) : null;
-
-    if (supabaseEnabled && (!token || !staff)) {
-      respond(res, 403, { error: 'チャットを利用するにはログインしてください。' });
+    if (!token) {
+      respond(res, 401, { error: 'チャットを利用するにはログインしてください。' });
       return;
     }
 
-    const sessionPayload = {
-      organizationId: staff?.organizationId || body.session?.organizationId || null,
-      officeId: staff?.officeId || body.session?.officeId || null,
-      staffId: staff?.id || body.session?.staffId || null,
-      threadId: null as string | null,
-      supabaseConfigured: supabaseEnabled,
-    };
+    const admin = getSupabaseAdmin();
+    const staff = await resolveStaffForRequest(admin, req);
+
+    if (!staff || !staff.id) {
+      respond(res, 403, { error: 'スタッフ情報が確認できません。' });
+      return;
+    }
+
+    if (!staff.officeId) {
+      respond(res, 403, { error: '所属する事業所が設定されていません。' });
+      return;
+    }
 
     try {
       ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
@@ -299,78 +319,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    let thread: any = null;
-    let threads: any[] = [];
-
-    if (supabaseEnabled && admin && staff?.officeId) {
-      const requestedThreadId = typeof body.session?.threadId === 'string' ? body.session.threadId : null;
-      thread = await ensureThread(admin, staff as StaffContext, requestedThreadId, generateThreadTitle(query));
-      sessionPayload.threadId = thread?.id || null;
-
-      try {
-        const chatResult = await knowledgeBase.chat({ query, history });
-
-        if (thread?.id && staff?.id) {
-          await recordMessages({
-            admin,
-            threadId: thread.id,
-            staffId: staff.id,
-            question: query,
-            answer: chatResult.answer,
-            context: chatResult.context,
-          });
-
-          const { items, focus } = await fetchThreadSummaries(admin, staff.officeId, thread.id);
-          threads = items;
-          if (focus) {
-            thread = focus;
-          }
-        }
-
-        respond(res, 200, {
-          answer: chatResult.answer,
-          context: chatResult.context,
-          thread,
-          threads,
-          session: sessionPayload,
-        });
-        return;
-      } catch (error: any) {
-        if (error instanceof GeminiApiError) {
-          respond(res, error.status || 500, {
-            error: error.message,
-            debugId: error.debugId || null,
-            source: 'gemini',
-            status: error.status || 500,
-          });
-          return;
-        }
-        throw error;
-      }
+    const thread = await ensureThread(admin, staff as StaffContext, requestedThreadId, generateThreadTitle(message));
+    if (!thread) {
+      respond(res, 403, { error: 'チャットスレッドを作成できませんでした。' });
+      return;
     }
 
-    // Supabase 未設定の場合はチャットのみ応答
-    try {
-      const chatResult = await knowledgeBase.chat({ query, history });
-      respond(res, 200, {
-        answer: chatResult.answer,
-        context: chatResult.context,
-        thread: null,
-        threads: [],
-        session: sessionPayload,
-      });
-    } catch (error: any) {
-      if (error instanceof GeminiApiError) {
-        respond(res, error.status || 500, {
-          error: error.message,
-          debugId: error.debugId || null,
-          source: 'gemini',
-          status: error.status || 500,
-        });
-        return;
-      }
-      throw error;
-    }
+    await insertMessage({
+      admin,
+      threadId: thread.id,
+      staffId: staff.id,
+      role: 'user',
+      content: message,
+    });
+
+    const historyRows = await loadThreadMessages(admin, thread.id);
+    const geminiMessages = toGeminiMessages(historyRows);
+
+    const chatResult = await generateChatResponse({ messages: geminiMessages });
+    const assistantContent = chatResult.text?.trim() || DEFAULT_ASSISTANT_FALLBACK;
+
+    const assistantMetadata = chatResult.usage ? { usage: chatResult.usage } : null;
+    await insertMessage({
+      admin,
+      threadId: thread.id,
+      staffId: staff.id,
+      role: 'assistant',
+      content: assistantContent,
+      metadata: assistantMetadata,
+    });
+
+    await touchThread(admin, thread.id);
+
+    const finalRows = await loadThreadMessages(admin, thread.id);
+    const messages = finalRows.map(mapMessageResponse);
+
+    respond(res, 200, {
+      threadId: thread.id,
+      messages,
+      usage: chatResult.usage || null,
+    });
   } catch (error: any) {
     console.error('api/chat failed', error);
     if (!res.headersSent) {

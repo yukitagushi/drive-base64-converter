@@ -70,6 +70,24 @@ export interface GeminiMediaAnalysisResult {
   raw?: any;
 }
 
+export interface GeminiChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
+export interface GeminiChatCandidate {
+  text: string;
+  finishReason: string | null;
+  index: number | null;
+}
+
+export interface GeminiChatResult {
+  text: string;
+  candidates: GeminiChatCandidate[];
+  usage?: Record<string, any> | null;
+  raw?: any;
+}
+
 function readProjectId(): string | null {
   return (
     process.env.GEMINI_PROJECT_ID ||
@@ -457,6 +475,137 @@ function normalizeModelId(value?: string | null): string | null {
     return null;
   }
   return trimmed.startsWith('models/') ? trimmed : `models/${trimmed}`;
+}
+
+function buildChatRequestContents(messages: GeminiChatMessage[]) {
+  const contents: any[] = [];
+  const systemParts: Array<{ text: string }> = [];
+
+  for (const entry of messages || []) {
+    if (!entry || typeof entry.content !== 'string') {
+      continue;
+    }
+    const trimmed = entry.content.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    if (entry.role === 'system') {
+      systemParts.push({ text: trimmed });
+      continue;
+    }
+
+    const role = entry.role === 'assistant' ? 'model' : 'user';
+    contents.push({
+      role,
+      parts: [{ text: trimmed }],
+    });
+  }
+
+  return { contents, systemParts };
+}
+
+export async function generateChatResponse(options: {
+  messages: GeminiChatMessage[];
+  model?: string;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  maxOutputTokens?: number;
+}): Promise<GeminiChatResult> {
+  if (!options || !Array.isArray(options.messages) || options.messages.length === 0) {
+    throw new Error('Gemini チャットにはメッセージが必要です。');
+  }
+
+  ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
+
+  const { contents, systemParts } = buildChatRequestContents(options.messages);
+  if (!contents.length) {
+    throw new Error('Gemini チャットにはユーザーまたはアシスタントのメッセージが必要です。');
+  }
+
+  const model = normalizeModelId(options.model) || 'models/gemini-1.5-pro';
+  const body: Record<string, any> = {
+    contents,
+  };
+
+  if (systemParts.length) {
+    body.systemInstruction = {
+      role: 'system',
+      parts: systemParts,
+    };
+  }
+
+  const generationConfig: Record<string, number> = {};
+  if (typeof options.temperature === 'number') {
+    generationConfig.temperature = options.temperature;
+  }
+  if (typeof options.topP === 'number') {
+    generationConfig.topP = options.topP;
+  }
+  if (typeof options.topK === 'number') {
+    generationConfig.topK = options.topK;
+  }
+  if (typeof options.maxOutputTokens === 'number') {
+    generationConfig.maxOutputTokens = options.maxOutputTokens;
+  }
+  if (Object.keys(generationConfig).length > 0) {
+    body.generationConfig = generationConfig;
+  }
+
+  const url = `${GEMINI_API_BASE}/${encodePath(model)}:generateContent`;
+  const response = await geminiFetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  const raw = await response.text();
+  const payload = parsePayload(raw);
+
+  if (!response.ok) {
+    const message = extractErrorMessage(payload, 'Gemini チャット生成に失敗しました。');
+    const debugId = extractDebugId(payload);
+    console.error('Gemini chat generateContent error', {
+      status: response.status,
+      body: typeof raw === 'string' ? raw.slice(0, 512) : raw,
+      debugId,
+      model,
+    });
+    throw new GeminiApiError(message, {
+      status: response.status,
+      debugId,
+      body: payload,
+    });
+  }
+
+  const candidates = Array.isArray((payload as any)?.candidates) ? (payload as any).candidates : [];
+  const normalizedCandidates: GeminiChatCandidate[] = candidates.map((candidate: any, index: number) => {
+    const parts = candidate?.content?.parts || candidate?.content || [];
+    const textParts: string[] = [];
+    for (const part of parts) {
+      if (part?.text) {
+        textParts.push(String(part.text));
+      }
+    }
+    const combined = textParts.join('\n').trim();
+    return {
+      text: combined,
+      finishReason: candidate?.finishReason || candidate?.finish_reason || null,
+      index: typeof candidate?.index === 'number' ? candidate.index : index,
+    };
+  });
+
+  const primary = normalizedCandidates.find((candidate) => candidate.text) || null;
+
+  return {
+    text: primary?.text || '',
+    candidates: normalizedCandidates,
+    usage: (payload as any)?.usageMetadata || (payload as any)?.usage_metadata || null,
+    raw: payload,
+  };
 }
 
 const INLINE_MEDIA_MAX_BYTES = 20 * 1024 * 1024; // 20MB safety cap for inline Gemini requests

@@ -1761,7 +1761,7 @@ function updateSessionHint() {
 
 function resetConversation() {
   conversationHistory = [];
-  messageList.innerHTML = '';
+  renderConversation(conversationHistory);
   setStatus('ジェミニ準備完了');
 }
 
@@ -1963,7 +1963,6 @@ async function onChatSubmit(event) {
   chatInput.style.height = 'auto';
 
   appendMessage('user', text);
-  conversationHistory.push({ role: 'user', content: text });
   scrollToBottom();
 
   const loadingMessage = appendMessage('model', 'Gemini が考えています...', { loading: true });
@@ -1976,14 +1975,8 @@ async function onChatSubmit(event) {
     const data = await safeFetch('/api/chat', {
       method: 'POST',
       body: JSON.stringify({
-        query: text,
-        history: conversationHistory.slice(0, -1),
-        session: {
-          organizationId: sessionState.organizationId,
-          officeId: sessionState.officeId,
-          staffId: sessionState.staffId,
-          threadId: sessionState.threadId,
-        },
+        threadId: sessionState.threadId,
+        message: text,
       }),
     });
 
@@ -1991,19 +1984,13 @@ async function onChatSubmit(event) {
       throw new Error(data.error || '応答の取得に失敗しました');
     }
 
-    const answer = data.answer || '(回答なし)';
-    updateMessage(loadingMessage, answer, data.context);
-    conversationHistory.push({ role: 'model', content: answer });
+    conversationHistory = Array.isArray(data.messages) ? data.messages : [];
+    sessionState.threadId = data.threadId || sessionState.threadId;
+
+    renderConversation(conversationHistory);
     setStatus('ジェミニ準備完了');
 
-    if (data.session || data.threads) {
-      applySessionUpdate(data.session || sessionState, data.threads);
-      renderSessionSelectors();
-    }
-
-    if (data.thread) {
-      upsertThread(data.thread);
-    }
+    loadSession().catch((error) => console.error(error));
   } catch (error) {
     console.error(error);
     updateMessage(loadingMessage, `エラー: ${error.message}`);
@@ -2676,6 +2663,17 @@ function closeDialog(dialog) {
     dialog.classList.remove('is-open');
     dialog.dispatchEvent(new Event('close'));
   }
+}
+
+function renderConversation(messages = []) {
+  if (!messageList) return;
+  messageList.innerHTML = '';
+  const items = Array.isArray(messages) ? messages : [];
+  for (const entry of items) {
+    const normalizedRole = entry?.role === 'assistant' ? 'model' : entry?.role === 'system' ? 'model' : 'user';
+    appendMessage(normalizedRole, entry?.content || '');
+  }
+  scrollToBottom();
 }
 
 function appendMessage(role, text, options = {}) {
