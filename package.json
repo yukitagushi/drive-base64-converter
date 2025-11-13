@@ -1,6 +1,12 @@
 {
   "name": "drive-base64-converter",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
-  "engines": { "node": ">=18" }
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4"
+  }
 }
