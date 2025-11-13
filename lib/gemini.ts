@@ -347,33 +347,74 @@ export async function uploadFileToStore(options: {
   return result;
 }
 
-export async function analyzeFileWithGemini(options: {
-  geminiFileName: string;
-  prompt?: string;
-  mimeType?: string;
-  model?: string;
-}): Promise<GeminiMediaAnalysisResult> {
-  const fileName = String(options.geminiFileName || '').trim();
-  if (!fileName) {
-    throw new Error('Gemini に渡すファイル名が指定されていません。');
+function normalizeModelId(value?: string | null): string | null {
+  if (!value) {
+    return null;
   }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.startsWith('models/') ? trimmed : `models/${trimmed}`;
+}
 
-  const prompt = options.prompt?.trim() || 'このメディアの内容を要約し、重要なポイントと推奨アクションを日本語で提示してください。';
-  const model = options.model || 'models/gemini-1.5-pro-latest';
+function buildMediaPromptParts({
+  fileName,
+  mimeType,
+  prompt,
+}: {
+  fileName: string;
+  mimeType?: string;
+  prompt: string;
+}) {
+  const parts: any[] = [];
+  const fileData: Record<string, string> = { fileUri: fileName };
+  if (mimeType && mimeType.trim()) {
+    fileData.mimeType = mimeType.trim();
+  }
+  parts.push({ fileData });
+  if (prompt) {
+    parts.push({ text: prompt });
+  }
+  return parts;
+}
 
+function getDefaultModelOrder(mimeType?: string | null): string[] {
+  const defaults = ['models/gemini-2.5-flash'];
+  const fallback = 'models/gemini-1.5-pro-latest';
+  if (mimeType && mimeType.startsWith('video/')) {
+    // The 1.5 Pro models generally provide better temporal reasoning for video.
+    return [fallback, defaults[0]];
+  }
+  return [...defaults, fallback];
+}
+
+function shouldRetryModel(error: any): boolean {
+  if (!(error instanceof GeminiApiError)) {
+    return false;
+  }
+  if (!error.status) {
+    return true;
+  }
+  return error.status >= 500 || error.status === 429;
+}
+
+async function invokeMediaAnalysis({
+  model,
+  fileName,
+  mimeType,
+  prompt,
+}: {
+  model: string;
+  fileName: string;
+  mimeType?: string;
+  prompt: string;
+}): Promise<GeminiMediaAnalysisResult> {
   const requestBody = {
     contents: [
       {
         role: 'user',
-        parts: [
-          { text: prompt },
-          {
-            fileData:
-              options.mimeType && options.mimeType.trim()
-                ? { fileUri: fileName, mimeType: options.mimeType }
-                : { fileUri: fileName },
-          },
-        ],
+        parts: buildMediaPromptParts({ fileName, mimeType, prompt }),
       },
     ],
   };
@@ -397,6 +438,7 @@ export async function analyzeFileWithGemini(options: {
       status: response.status,
       body: typeof raw === 'string' ? raw.slice(0, 512) : raw,
       debugId,
+      model,
     });
     throw new GeminiApiError(`${message} (${response.status})`, {
       status: response.status,
@@ -426,9 +468,62 @@ export async function analyzeFileWithGemini(options: {
 
   return {
     text: primary?.text || '',
-    model: payload?.modelVersion || payload?.model || null,
+    model: payload?.modelVersion || payload?.model || model,
     candidates: normalizedCandidates,
     usage: payload?.usageMetadata || payload?.usage_metadata || null,
     raw: payload,
   };
+}
+
+export async function analyzeFileWithGemini(options: {
+  geminiFileName: string;
+  prompt?: string;
+  mimeType?: string;
+  model?: string;
+  modelFallbacks?: string[];
+}): Promise<GeminiMediaAnalysisResult> {
+  const fileName = String(options.geminiFileName || '').trim();
+  if (!fileName) {
+    throw new Error('Gemini に渡すファイル名が指定されていません。');
+  }
+
+  const prompt =
+    options.prompt?.trim() ||
+    'このメディアの内容を要約し、重要なポイントと推奨アクションを日本語で提示してください。';
+
+  const preferred = normalizeModelId(options.model);
+  const fallbackList = (options.modelFallbacks || []).map((model) => normalizeModelId(model)).filter(Boolean) as string[];
+  const orderedModels = preferred
+    ? [preferred, ...fallbackList]
+    : [...getDefaultModelOrder(options.mimeType), ...fallbackList];
+
+  let lastError: any = null;
+  for (const candidate of orderedModels) {
+    if (!candidate) {
+      continue;
+    }
+    try {
+      return await invokeMediaAnalysis({
+        model: candidate,
+        fileName,
+        mimeType: options.mimeType,
+        prompt,
+      });
+    } catch (error: any) {
+      lastError = error;
+      if (!shouldRetryModel(error)) {
+        throw error;
+      }
+      console.warn(`Gemini モデル ${candidate} での解析に失敗しました。フォールバックを試します。`, {
+        error: error instanceof Error ? error.message : error,
+      });
+      continue;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error('利用可能な Gemini モデルが選択されていません。');
 }
