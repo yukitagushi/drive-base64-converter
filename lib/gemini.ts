@@ -344,7 +344,7 @@ export async function uploadFileToStore(options: {
 
   const storeResource = ensureStoreResourceName(options.storeName, options.displayName);
   const normalizedStoreResource = storeResource.replace(/\/+$/, '');
-  const uploadResourcePath = `${normalizedStoreResource}/files`;
+  const uploadResourcePath = normalizedStoreResource;
 
   const metadata: Record<string, string> = {};
   if (options.displayName) {
@@ -369,7 +369,7 @@ export async function uploadFileToStore(options: {
   );
 
   const apiKey = ensureApiKey();
-  const uploadUrl = `${GEMINI_UPLOAD_BASE}/${encodePath(uploadResourcePath)}:upload?uploadType=multipart&key=${encodeURIComponent(
+  const uploadUrl = `${GEMINI_UPLOAD_BASE}/${encodePath(uploadResourcePath)}:uploadToFileSearchStore?uploadType=multipart&key=${encodeURIComponent(
     apiKey
   )}`;
   const uploadResponse = await fetch(uploadUrl, {
