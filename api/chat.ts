@@ -12,6 +12,20 @@ import {
   type GeminiChatMessage,
 } from '../lib/gemini';
 
+class SupabaseQueryError extends Error {
+  table: string;
+  operation: string;
+  supabaseError: any;
+
+  constructor(table: string, operation: string, supabaseError: any) {
+    super(supabaseError?.message || `Supabase ${operation} failed for ${table}`);
+    this.name = 'SupabaseQueryError';
+    this.table = table;
+    this.operation = operation;
+    this.supabaseError = supabaseError ?? null;
+  }
+}
+
 interface StaffContext {
   id: string;
   officeId: string | null;
@@ -110,6 +124,28 @@ function serializeGeminiError(error: unknown): Record<string, any> {
   return { value: error };
 }
 
+function serializeSupabaseErrorPayload(error: SupabaseQueryError | null): Record<string, any> | null {
+  if (!error) {
+    return null;
+  }
+
+  const raw = error.supabaseError || {};
+  const sanitized = typeof raw === 'object' && raw !== null
+    ? {
+        message: raw.message ?? null,
+        details: raw.details ?? null,
+        hint: raw.hint ?? null,
+        code: raw.code ?? null,
+      }
+    : { message: raw };
+
+  return {
+    table: error.table,
+    operation: error.operation,
+    ...sanitized,
+  };
+}
+
 function generateThreadTitle(text: string): string {
   if (!text) {
     return '新しい会話';
@@ -151,7 +187,12 @@ async function ensureThread(
       .maybeSingle();
 
     if (error) {
-      throw new Error(error.message);
+      console.error('supabase error', {
+        table: 'chat_threads',
+        operation: 'select',
+        error,
+      });
+      throw new SupabaseQueryError('chat_threads', 'select', error);
     }
 
     if (data && data.office_id === staff.officeId) {
@@ -169,8 +210,13 @@ async function ensureThread(
     .select('id, office_id, staff_id, title, created_at, updated_at')
     .single();
 
-  if (error) {
-    throw new Error(error.message);
+  if (error || !data) {
+    console.error('supabase error', {
+      table: 'chat_threads',
+      operation: 'insert',
+      error,
+    });
+    throw new SupabaseQueryError('chat_threads', 'insert', error);
   }
 
   return mapThreadRow(data as ThreadRow);
@@ -191,8 +237,13 @@ async function insertMessage(params: InsertMessageParams): Promise<MessageRow> {
     .select('id, thread_id, role, content, metadata, created_at')
     .single();
 
-  if (error) {
-    throw new Error(error.message);
+  if (error || !data) {
+    console.error('supabase error', {
+      table: 'chat_messages',
+      operation: 'insert',
+      error,
+    });
+    throw new SupabaseQueryError('chat_messages', 'insert', error);
   }
 
   return data as MessageRow;
@@ -206,7 +257,12 @@ async function loadThreadMessages(admin: ReturnType<typeof getSupabaseAdmin>, th
     .order('created_at', { ascending: true });
 
   if (error) {
-    throw new Error(error.message);
+    console.error('supabase error', {
+      table: 'chat_messages',
+      operation: 'select',
+      error,
+    });
+    throw new SupabaseQueryError('chat_messages', 'select', error);
   }
 
   return (data || []) as MessageRow[];
@@ -235,13 +291,18 @@ function toGeminiMessages(rows: MessageRow[]): GeminiChatMessage[] {
 }
 
 async function touchThread(admin: ReturnType<typeof getSupabaseAdmin>, threadId: string) {
-  try {
-    await admin
-      .from('chat_threads')
-      .update({ updated_at: new Date().toISOString() })
-      .eq('id', threadId);
-  } catch (error) {
-    console.warn('Failed to update chat thread timestamp:', error);
+  const { error } = await admin
+    .from('chat_threads')
+    .update({ updated_at: new Date().toISOString() })
+    .eq('id', threadId);
+
+  if (error) {
+    console.error('supabase error', {
+      table: 'chat_threads',
+      operation: 'update',
+      error,
+    });
+    throw new SupabaseQueryError('chat_threads', 'update', error);
   }
 }
 
@@ -362,9 +423,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (error: any) {
     console.error('api/chat failed', error);
     if (!res.headersSent) {
+      const supabaseErrorPayload = error instanceof SupabaseQueryError ? serializeSupabaseErrorPayload(error) : null;
       res.status(500).json({
         source: 'api',
         error: 'chat_failed',
+        supabaseError: supabaseErrorPayload,
         geminiError: serializeGeminiError(error),
       });
     }
