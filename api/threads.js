@@ -1,5 +1,6 @@
 const { getSupabaseService } = require('../lib/serverContext');
 const {
+  hydrateAuthFromRequest,
   getAuthState,
   updateSessionState,
   buildSessionPayload,
@@ -37,6 +38,8 @@ function generateThreadTitle(text) {
 
 async function handler(req, res) {
   try {
+    await hydrateAuthFromRequest(req);
+
     if (req.method === 'GET') {
       await handleGet(res);
       return;

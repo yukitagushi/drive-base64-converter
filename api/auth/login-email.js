@@ -1,7 +1,10 @@
 const { getSupabaseService } = require('../../lib/serverContext');
 const {
+  hydrateAuthFromRequest,
   setAuthContext,
   clearAuthContext,
+  issueSessionCookie,
+  clearSessionCookie,
   buildAuthPayload,
   buildSessionPayload,
   resetSessionAfterLogout,
@@ -32,6 +35,7 @@ async function handler(req, res) {
     return;
   }
 
+  await hydrateAuthFromRequest(req);
   const supabase = getSupabaseService();
   let payload = {};
   try {
@@ -98,11 +102,13 @@ async function handler(req, res) {
       buildSessionPayload(),
     ]);
 
+    issueSessionCookie(res, { user, staff, tokens });
     res.status(200).json({ auth: authPayload, session: sessionPayload });
   } catch (error) {
     console.error('Login error:', error?.message || error);
     clearAuthContext();
     await resetSessionAfterLogout();
+    clearSessionCookie(res);
     res.status(400).json({ error: error?.message || 'ログインに失敗しました。' });
   }
 }

@@ -1,7 +1,9 @@
 const { getSupabaseService } = require('../../lib/serverContext');
 const {
+  hydrateAuthFromRequest,
   getAuthState,
   clearAuthContext,
+  clearSessionCookie,
   buildAuthPayload,
   buildSessionPayload,
   resetSessionAfterLogout,
@@ -14,6 +16,7 @@ async function handler(req, res) {
     return;
   }
 
+  await hydrateAuthFromRequest(req);
   const supabase = getSupabaseService();
   const auth = getAuthState();
 
@@ -35,6 +38,7 @@ async function handler(req, res) {
 
   clearAuthContext();
   await resetSessionAfterLogout();
+  clearSessionCookie(res);
 
   const [authPayload, sessionPayload] = await Promise.all([
     buildAuthPayload(),

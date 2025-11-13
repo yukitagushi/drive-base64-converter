@@ -1,7 +1,10 @@
 const { ensureKnowledge } = require('../lib/serverContext');
+const { hydrateAuthFromRequest } = require('../lib/serverState');
 
 async function handler(req, res) {
   try {
+    await hydrateAuthFromRequest(req);
+
     if (req.method === 'GET') {
       await handleGet(res);
       return;

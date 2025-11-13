@@ -1,4 +1,5 @@
 const { getFileSearchService, getSupabaseService } = require('../lib/serverContext');
+const { hydrateAuthFromRequest } = require('../lib/serverState');
 
 function firstValue(value) {
   if (Array.isArray(value)) {
@@ -9,6 +10,8 @@ function firstValue(value) {
 
 async function handler(req, res) {
   try {
+    await hydrateAuthFromRequest(req);
+
     if (req.method === 'GET') {
       await handleGet(req, res);
       return;

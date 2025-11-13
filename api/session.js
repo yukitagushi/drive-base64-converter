@@ -1,5 +1,6 @@
 const { getSupabaseService } = require('../lib/serverContext');
 const {
+  hydrateAuthFromRequest,
   buildSessionPayload,
   updateSessionState,
   buildAuthPayload,
@@ -27,6 +28,8 @@ function parseBody(req) {
 
 async function handler(req, res) {
   try {
+    await hydrateAuthFromRequest(req);
+
     if (req.method === 'GET') {
       const payload = await buildSessionPayload();
       res.status(200).json(payload);

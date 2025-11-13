@@ -1,4 +1,5 @@
 const { ensureKnowledge, getSupabaseService, getFileSearchService } = require('../lib/serverContext');
+const { hydrateAuthFromRequest } = require('../lib/serverState');
 
 function normalizeHistory(list) {
   if (!Array.isArray(list)) {
@@ -32,6 +33,8 @@ async function handler(req, res) {
   }
 
   try {
+    await hydrateAuthFromRequest(req);
+
     const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
     const query = String(body.query || '').trim();
 

@@ -1,4 +1,4 @@
-const { buildAuthPayload } = require('../../lib/serverState');
+const { hydrateAuthFromRequest, buildAuthPayload } = require('../../lib/serverState');
 
 async function handler(req, res) {
   try {
@@ -8,6 +8,7 @@ async function handler(req, res) {
       return;
     }
 
+    await hydrateAuthFromRequest(req);
     const payload = await buildAuthPayload();
     res.status(200).json(payload);
   } catch (error) {
