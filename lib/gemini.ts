@@ -209,28 +209,19 @@ function ensureStoreResourceName(nameOrId: string, displayName?: string): string
     throw new Error('Gemini ストア名が指定されていません。');
   }
 
-  if (trimmed.startsWith('projects/')) {
+  if (trimmed.startsWith('fileSearchStores/')) {
     return trimmed;
   }
 
-  const env = readGeminiEnvironment();
-  const projectId = env.projectId?.trim();
-  const location = env.location?.trim();
-
-  const ensurePrefix = (slug: string): string => {
-    if (projectId && location) {
-      return `projects/${projectId}/locations/${location}/fileSearchStores/${slug}`;
+  if (trimmed.startsWith('projects/')) {
+    const match = trimmed.match(/fileSearchStores\/(.+)$/);
+    if (match?.[1]) {
+      return `fileSearchStores/${match[1]}`;
     }
-    return `fileSearchStores/${slug}`;
-  };
-
-  if (trimmed.startsWith('fileSearchStores/')) {
-    const slug = trimmed.slice('fileSearchStores/'.length);
-    return ensurePrefix(slug);
   }
 
   const slug = sanitizeStoreId(trimmed, displayName || undefined);
-  return ensurePrefix(slug);
+  return `fileSearchStores/${slug}`;
 }
 
 async function geminiFetch(url: string, init?: RequestInit) {
@@ -288,11 +279,9 @@ export async function createFileStore(displayName: string): Promise<GeminiStoreR
     body.displayName = label;
   }
 
-  const env = ensureGeminiEnvironment();
-  const parentSegments = env.projectId && env.location ? `projects/${env.projectId}/locations/${env.location}` : '';
-  const url = parentSegments
-    ? `${GEMINI_API_BASE}/${encodePath(`${parentSegments}/fileSearchStores`)}`
-    : `${GEMINI_API_BASE}/fileSearchStores`;
+  ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
+
+  const url = `${GEMINI_API_BASE}/fileSearchStores`;
   const response = await geminiFetch(url, {
     method: 'POST',
     headers: {
