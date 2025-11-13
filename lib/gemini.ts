@@ -88,6 +88,12 @@ export interface GeminiChatResult {
   raw?: any;
 }
 
+export interface GeminiChatFileSearchOptions {
+  storeName: string;
+  maxChunks?: number;
+  dynamicThreshold?: number;
+}
+
 function readProjectId(): string | null {
   return (
     process.env.GEMINI_PROJECT_ID ||
@@ -512,6 +518,8 @@ export async function generateChatResponse(options: {
   topP?: number;
   topK?: number;
   maxOutputTokens?: number;
+  systemInstruction?: string;
+  fileSearch?: GeminiChatFileSearchOptions | null;
 }): Promise<GeminiChatResult> {
   if (!options || !Array.isArray(options.messages) || options.messages.length === 0) {
     throw new Error('Gemini チャットにはメッセージが必要です。');
@@ -519,7 +527,8 @@ export async function generateChatResponse(options: {
 
   ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
 
-  const { contents, systemParts } = buildChatRequestContents(options.messages);
+  const messageList = Array.isArray(options.messages) ? options.messages : [];
+  const { contents, systemParts } = buildChatRequestContents(messageList);
   if (!contents.length) {
     throw new Error('Gemini チャットにはユーザーまたはアシスタントのメッセージが必要です。');
   }
@@ -529,10 +538,17 @@ export async function generateChatResponse(options: {
     contents,
   };
 
-  if (systemParts.length) {
+  if (systemParts.length || options.systemInstruction) {
+    const parts = [...systemParts];
+    if (options.systemInstruction) {
+      const trimmed = options.systemInstruction.trim();
+      if (trimmed) {
+        parts.unshift({ text: trimmed });
+      }
+    }
     body.systemInstruction = {
       role: 'system',
-      parts: systemParts,
+      parts,
     };
   }
 
@@ -551,6 +567,24 @@ export async function generateChatResponse(options: {
   }
   if (Object.keys(generationConfig).length > 0) {
     body.generationConfig = generationConfig;
+  }
+
+  if (options.fileSearch?.storeName) {
+    const storeResource = ensureStoreResourceName(options.fileSearch.storeName);
+    body.tools = [{ fileSearch: {} }];
+    const fileSearchConfig: Record<string, any> = {
+      vectorStore: [{ name: storeResource }],
+    };
+    if (typeof options.fileSearch.maxChunks === 'number') {
+      fileSearchConfig.maxChunks = options.fileSearch.maxChunks;
+    }
+    if (typeof options.fileSearch.dynamicThreshold === 'number') {
+      fileSearchConfig.dynamicRetrievalConfig = {
+        mode: 'MODE_DYNAMIC',
+        dynamicThreshold: options.fileSearch.dynamicThreshold,
+      };
+    }
+    body.toolConfig = { fileSearch: fileSearchConfig };
   }
 
   const url = `${GEMINI_API_BASE}/${encodePath(model)}:generateContent`;

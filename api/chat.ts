@@ -50,6 +50,14 @@ interface MessageRow {
   created_at: string;
 }
 
+interface FileStoreRow {
+  id: string;
+  office_id: string | null;
+  organization_id: string | null;
+  gemini_store_name: string;
+  display_name: string | null;
+}
+
 interface ThreadSummary {
   id: string;
   officeId: string | null;
@@ -222,6 +230,59 @@ async function ensureThread(
   return mapThreadRow(data as ThreadRow);
 }
 
+async function resolveFileSearchStore(
+  admin: ReturnType<typeof getSupabaseAdmin>,
+  staff: StaffContext
+): Promise<FileStoreRow | null> {
+  if (!staff.officeId) {
+    return null;
+  }
+
+  const selectColumns = 'id, office_id, organization_id, gemini_store_name, display_name';
+
+  const attempt = async (column: 'office_id' | 'organization_id', value: string | null) => {
+    if (!value) {
+      return null;
+    }
+    const { data, error } = await admin
+      .from('file_stores')
+      .select(selectColumns)
+      .eq(column, value)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error && error.code !== 'PGRST116') {
+      console.error('supabase error', {
+        table: 'file_stores',
+        operation: 'select',
+        error,
+      });
+      throw new SupabaseQueryError('file_stores', 'select', error);
+    }
+
+    if (!data) {
+      return null;
+    }
+
+    return data as FileStoreRow;
+  };
+
+  const officeStore = await attempt('office_id', staff.officeId);
+  if (officeStore) {
+    return officeStore;
+  }
+
+  if (staff.organizationId) {
+    const organizationStore = await attempt('organization_id', staff.organizationId);
+    if (organizationStore) {
+      return organizationStore;
+    }
+  }
+
+  return null;
+}
+
 async function insertMessage(params: InsertMessageParams): Promise<MessageRow> {
   const payload = {
     thread_id: params.threadId,
@@ -330,6 +391,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    const catchContext: Record<string, any> = {};
     let body: any = {};
     try {
       body = parseBody(req);
@@ -365,6 +427,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
+    catchContext.staffId = staff.id;
+    catchContext.officeId = staff.officeId;
+    catchContext.organizationId = staff.organizationId;
+
     if (!staff.officeId) {
       respond(res, 403, { error: '所属する事業所が設定されていません。' });
       return;
@@ -380,11 +446,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
+    const store = await resolveFileSearchStore(admin, staff as StaffContext);
+    if (!store) {
+      respond(res, 400, {
+        error: 'missing_context',
+        detail: '所属する事業所または組織に紐づく Gemini File Search ストアが見つかりません。',
+      });
+      return;
+    }
+    catchContext.geminiStoreName = store.gemini_store_name;
+    catchContext.fileStoreId = store.id;
+
     const thread = await ensureThread(admin, staff as StaffContext, requestedThreadId, generateThreadTitle(message));
     if (!thread) {
       respond(res, 403, { error: 'チャットスレッドを作成できませんでした。' });
       return;
     }
+    catchContext.threadId = thread.id;
 
     await insertMessage({
       admin,
@@ -396,11 +474,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const historyRows = await loadThreadMessages(admin, thread.id);
     const geminiMessages = toGeminiMessages(historyRows);
+    const systemInstruction = [
+      'あなたは社内のナレッジアシスタントです。',
+      `Gemini File Search ストア「${store.display_name || store.gemini_store_name}」(ID: ${store.gemini_store_name}) に保存されたドキュメントを検索しながら日本語で回答してください。`,
+      '参照情報が不十分な場合はその旨を正直に伝えてください。',
+    ].join('\n');
 
-    const chatResult = await generateChatResponse({ messages: geminiMessages });
+    const chatResult = await generateChatResponse({
+      messages: geminiMessages,
+      systemInstruction,
+      fileSearch: { storeName: store.gemini_store_name },
+    });
     const assistantContent = chatResult.text?.trim() || DEFAULT_ASSISTANT_FALLBACK;
 
-    const assistantMetadata = chatResult.usage ? { usage: chatResult.usage } : null;
+    const assistantMetadata = chatResult.usage
+      ? { usage: chatResult.usage, fileSearchStore: store.gemini_store_name }
+      : { fileSearchStore: store.gemini_store_name };
     await insertMessage({
       admin,
       threadId: thread.id,
