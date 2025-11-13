@@ -12,6 +12,7 @@ import {
   analyzeFileWithGemini,
   analyzeInlineMediaWithGemini,
   GeminiApiError,
+  ensureGeminiEnvironment,
   uploadFileToStore,
   type GeminiFileUploadResult,
   type GeminiMediaAnalysisResult,
@@ -122,6 +123,70 @@ function stripExtension(filename: string): string {
     return filename;
   }
   return filename.slice(0, index);
+}
+
+function compactGeminiBody(body: any): any {
+  if (body == null) {
+    return null;
+  }
+  if (typeof body === 'string') {
+    return body.length > 2000 ? `${body.slice(0, 2000)}…` : body;
+  }
+  try {
+    const serialized = JSON.stringify(body);
+    if (serialized.length > 2000) {
+      return `${serialized.slice(0, 2000)}…`;
+    }
+  } catch {
+    // ignore JSON stringify errors and fall back to the original body.
+  }
+  return body;
+}
+
+function serializeGeminiError(error: unknown): Record<string, any> {
+  if (error instanceof GeminiApiError) {
+    return {
+      name: error.name,
+      message: error.message,
+      status: error.status ?? null,
+      debugId: error.debugId ?? null,
+      body: compactGeminiBody(error.body),
+    };
+  }
+
+  if (error instanceof Error) {
+    const responseSummary = (() => {
+      const anyError = error as any;
+      const response = anyError?.response;
+      if (!response) {
+        return undefined;
+      }
+      try {
+        return {
+          status: response.status,
+          statusText: response.statusText,
+        };
+      } catch {
+        return undefined;
+      }
+    })();
+
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      response: responseSummary,
+    };
+  }
+
+  return { value: error };
+}
+
+function logGeminiError(message: string, error: unknown, context: Record<string, any> = {}) {
+  console.error(message, {
+    ...context,
+    geminiError: serializeGeminiError(error),
+  });
 }
 
 function isZipType(mimeType: string, extension: string): boolean {
@@ -396,7 +461,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Allow', 'GET,POST,OPTIONS');
     respond(res, 405, { error: 'Method Not Allowed' });
   } catch (error: any) {
-    console.error('Error in /api/documents:', error);
+    logGeminiError('Error in /api/documents:', error);
     if (handleKnownError(res, error)) {
       return;
     }
@@ -484,6 +549,22 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
   const staff = await resolveStaffForRequest(admin, req);
   if (!staff?.officeId) {
     respond(res, 403, { error: 'スタッフ情報が見つかりません。' });
+    return;
+  }
+
+  try {
+    const env = ensureGeminiEnvironment();
+    console.info('Gemini environment resolved for upload request.', {
+      projectId: env.projectId,
+      location: env.location,
+    });
+  } catch (error: any) {
+    logGeminiError('Gemini environment validation failed.', error);
+    respond(res, 500, {
+      error:
+        error?.message ||
+        'Gemini の環境変数 (GEMINI_API_KEY, GEMINI_PROJECT_ID, GEMINI_LOCATION) を確認してください。',
+    });
     return;
   }
 
@@ -807,8 +888,9 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
         mimeType: normalizedMime,
       });
     } catch (error: any) {
-      console.warn('Gemini inline media analysis failed. Falling back to stored file workflow.', {
-        error: error instanceof Error ? error.message : error,
+      logGeminiError('Gemini inline media analysis failed. Falling back to stored file workflow.', error, {
+        mimeType: normalizedMime,
+        displayName: context.displayName,
       });
     }
 
@@ -819,10 +901,18 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
     });
 
     if (!analysis) {
-      analysis = await analyzeFileWithGemini({
-        geminiFileName: original.gemini.geminiFileName,
-        mimeType: normalizedMime,
-      });
+      try {
+        analysis = await analyzeFileWithGemini({
+          geminiFileName: original.gemini.geminiFileName,
+          mimeType: normalizedMime,
+        });
+      } catch (error: any) {
+        logGeminiError('Gemini stored media analysis failed for image.', error, {
+          geminiFileName: original.gemini.geminiFileName,
+          mimeType: normalizedMime,
+        });
+        throw error;
+      }
     }
 
     if (!analysis) {
@@ -849,10 +939,19 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       mimeType: normalizedMime,
     });
 
-    const analysis = await analyzeFileWithGemini({
-      geminiFileName: original.gemini.geminiFileName,
-      mimeType: normalizedMime,
-    });
+    let analysis: GeminiMediaAnalysisResult;
+    try {
+      analysis = await analyzeFileWithGemini({
+        geminiFileName: original.gemini.geminiFileName,
+        mimeType: normalizedMime,
+      });
+    } catch (error: any) {
+      logGeminiError('Gemini stored media analysis failed for video.', error, {
+        geminiFileName: original.gemini.geminiFileName,
+        mimeType: normalizedMime,
+      });
+      throw error;
+    }
 
     analyses.push(analysis);
 

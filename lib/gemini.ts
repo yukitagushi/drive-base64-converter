@@ -2,6 +2,12 @@ const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com';
 const GEMINI_API_BASE = `${GEMINI_API_ROOT}/v1beta`;
 const GEMINI_UPLOAD_BASE = `${GEMINI_API_ROOT}/upload/v1beta`;
 
+export interface GeminiEnvironmentConfig {
+  apiKey: string;
+  projectId: string | null;
+  location: string | null;
+}
+
 export class GeminiApiError extends Error {
   status?: number;
   debugId?: string | null;
@@ -62,6 +68,24 @@ export interface GeminiMediaAnalysisResult {
   raw?: any;
 }
 
+function readProjectId(): string | null {
+  return (
+    process.env.GEMINI_PROJECT_ID ||
+    process.env.GOOGLE_PROJECT_ID ||
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    null
+  );
+}
+
+function readLocation(): string | null {
+  return (
+    process.env.GEMINI_LOCATION ||
+    process.env.GOOGLE_CLOUD_LOCATION ||
+    process.env.GOOGLE_CLOUD_REGION ||
+    null
+  );
+}
+
 function getApiKey(): string {
   return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 }
@@ -72,6 +96,41 @@ function ensureApiKey(): string {
     throw new Error('Gemini File Search を利用するには GEMINI_API_KEY (または GOOGLE_API_KEY) が必要です。');
   }
   return apiKey;
+}
+
+export function readGeminiEnvironment(): GeminiEnvironmentConfig {
+  return {
+    apiKey: getApiKey(),
+    projectId: readProjectId(),
+    location: readLocation(),
+  };
+}
+
+export function ensureGeminiEnvironment(options: {
+  requireApiKey?: boolean;
+  requireProject?: boolean;
+  requireLocation?: boolean;
+} = {}): GeminiEnvironmentConfig {
+  const { requireApiKey = true, requireProject = true, requireLocation = true } = options;
+  const env = readGeminiEnvironment();
+
+  if (requireApiKey && !env.apiKey) {
+    throw new Error('Gemini API キーが設定されていません。GEMINI_API_KEY または GOOGLE_API_KEY を確認してください。');
+  }
+
+  if (requireProject && !env.projectId) {
+    throw new Error(
+      'Gemini プロジェクト ID が設定されていません。GEMINI_PROJECT_ID (または GOOGLE_PROJECT_ID / GOOGLE_CLOUD_PROJECT) を確認してください。'
+    );
+  }
+
+  if (requireLocation && !env.location) {
+    throw new Error(
+      'Gemini のロケーションが設定されていません。GEMINI_LOCATION (または GOOGLE_CLOUD_LOCATION / GOOGLE_CLOUD_REGION) を確認してください。'
+    );
+  }
+
+  return env;
 }
 
 function normalizeStore(entry: GeminiStoreResponse): GeminiStoreResult {
@@ -147,12 +206,28 @@ function ensureStoreResourceName(nameOrId: string, displayName?: string): string
     throw new Error('Gemini ストア名が指定されていません。');
   }
 
-  if (trimmed.startsWith('fileSearchStores/')) {
+  if (trimmed.startsWith('projects/')) {
     return trimmed;
   }
 
+  const env = readGeminiEnvironment();
+  const projectId = env.projectId?.trim();
+  const location = env.location?.trim();
+
+  const ensurePrefix = (slug: string): string => {
+    if (projectId && location) {
+      return `projects/${projectId}/locations/${location}/fileSearchStores/${slug}`;
+    }
+    return `fileSearchStores/${slug}`;
+  };
+
+  if (trimmed.startsWith('fileSearchStores/')) {
+    const slug = trimmed.slice('fileSearchStores/'.length);
+    return ensurePrefix(slug);
+  }
+
   const slug = sanitizeStoreId(trimmed, displayName || undefined);
-  return `fileSearchStores/${slug}`;
+  return ensurePrefix(slug);
 }
 
 async function geminiFetch(url: string, init?: RequestInit) {
@@ -203,16 +278,18 @@ function parsePayload(raw: string): any {
   }
 }
 
-export async function createFileStore(
-  displayName: string
-): Promise<GeminiStoreResult> {
+export async function createFileStore(displayName: string): Promise<GeminiStoreResult> {
   const label = typeof displayName === 'string' ? displayName.trim() : '';
   const body: Record<string, string> = {};
   if (label) {
     body.displayName = label;
   }
 
-  const url = `${GEMINI_API_BASE}/fileSearchStores`;
+  const env = ensureGeminiEnvironment();
+  const parentSegments = env.projectId && env.location ? `projects/${env.projectId}/locations/${env.location}` : '';
+  const url = parentSegments
+    ? `${GEMINI_API_BASE}/${encodePath(`${parentSegments}/fileSearchStores`)}`
+    : `${GEMINI_API_BASE}/fileSearchStores`;
   const response = await geminiFetch(url, {
     method: 'POST',
     headers: {
