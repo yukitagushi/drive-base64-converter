@@ -20,6 +20,8 @@ import { ensureStorageBucket } from '../lib/storage';
 
 const DEFAULT_UPLOAD_BUCKET = 'gemini-upload-cache';
 const MAX_UPLOAD_BYTES = 60 * 1024 * 1024; // 60MB safety cap for server-side processing
+const MAX_ZIP_EXTRACT_FILES = 200;
+const MAX_ZIP_EXTRACT_BYTES = 50 * 1024 * 1024; // avoid exploding archives on the server
 
 const ZIP_MIME_TYPES = new Set([
   'application/zip',
@@ -52,6 +54,23 @@ const TEXTUAL_EXTENSIONS = new Set([
   'cs',
   'sql',
   'log',
+]);
+
+const TEXTUAL_MIME_HINTS = new Set([
+  'application/json',
+  'application/ld+json',
+  'application/xml',
+  'application/xhtml+xml',
+  'application/javascript',
+  'application/x-javascript',
+  'application/typescript',
+  'application/x-typescript',
+  'application/yaml',
+  'application/x-yaml',
+  'application/x-sh',
+  'application/sql',
+  'application/csv',
+  'application/vnd.ms-excel',
 ]);
 
 const IMAGE_PREFIX = 'image/';
@@ -255,6 +274,46 @@ function resolveMimeType({
 
 function isTextExtension(extension: string): boolean {
   return TEXTUAL_EXTENSIONS.has(extension);
+}
+
+function isProbablyTextMime(mimeType: string, extension: string): boolean {
+  const normalized = normalizeMimeCandidate(mimeType);
+  if (!normalized || normalized === 'application/octet-stream') {
+    return isTextExtension(extension);
+  }
+  if (normalized.startsWith('text/')) {
+    return true;
+  }
+  return TEXTUAL_MIME_HINTS.has(normalized) || isTextExtension(extension);
+}
+
+function sanitizeZipEntryDisplayName(name: string, fallbackIndex: number, extension: string): string {
+  const cleaned = name
+    .replace(/^\.\/+/, '')
+    .replace(/^[\\/]+/, '')
+    .replace(/[\\]+/g, '/')
+    .trim();
+  const safeSegments = cleaned
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment && segment !== '..');
+  const normalized = safeSegments.join('__').replace(/[^a-zA-Z0-9._-]+/g, '_');
+  const safeBase = normalized.slice(-240);
+  let candidate = safeBase || `extracted-file-${fallbackIndex + 1}`;
+  if (!candidate.includes('.') && extension) {
+    candidate = `${candidate}.${extension}`;
+  }
+  return candidate || `extracted-file-${fallbackIndex + 1}`;
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, exponent);
+  return `${value.toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
 }
 
 function appendDescription(base: string | null, extra: string | null): string | null {
@@ -698,30 +757,39 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       mimeType: normalizedMime,
     });
 
-    let summary;
+    let extraction: ZipExtractionResult;
     try {
-      summary = await buildZipSummaryText(context.fileBuffer, context.originalFilename);
+      extraction = await extractZipArchive(context.fileBuffer, context.originalFilename);
     } catch (error: any) {
       throw new Error(error?.message || 'ZIP アーカイブの展開に失敗しました。');
     }
-    const { text, note } = summary;
+
+    for (const [index, file] of extraction.extractedFiles.entries()) {
+      await upload({
+        buffer: file.buffer,
+        displayName: file.displayName || `extracted-${index + 1}`,
+        mimeType: file.mimeType || 'application/octet-stream',
+        extraDescription: file.description,
+      });
+    }
+
     const extractedName = `${stripExtension(context.displayName || context.originalFilename) || context.displayName}-extracted.txt`;
-    const extraDescription = note
-      ? `ZIP アーカイブから抽出したテキストです。\n${note}`
+    const summaryDescription = extraction.summaryDescriptionLines.length
+      ? extraction.summaryDescriptionLines.join('\n')
       : 'ZIP アーカイブから抽出したテキストです。';
 
     await upload({
-      buffer: Buffer.from(text, 'utf8'),
+      buffer: Buffer.from(extraction.summaryText, 'utf8'),
       displayName: extractedName,
       mimeType: 'text/plain; charset=utf-8',
-      extraDescription,
+      extraDescription: summaryDescription,
     });
 
-    if (note) {
-      notes.push(note);
-    }
-
-    notes.push('ZIP アーカイブを展開してテキスト化しました。');
+    extraction.userNotes.forEach((note) => {
+      if (note && !notes.includes(note)) {
+        notes.push(note);
+      }
+    });
   } else if (isImageMime(normalizedMime)) {
     let analysis: GeminiMediaAnalysisResult | null = null;
     try {
@@ -854,36 +922,95 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
   return { record, gemini: uploadResult };
 }
 
-async function buildZipSummaryText(buffer: Buffer, originalName: string): Promise<{ text: string; note: string | null }> {
+interface ZipExtractedFileRecord {
+  buffer: Buffer;
+  displayName: string;
+  mimeType: string;
+  description: string | null;
+}
+
+interface ZipExtractionResult {
+  summaryText: string;
+  summaryDescriptionLines: string[];
+  extractedFiles: ZipExtractedFileRecord[];
+  userNotes: string[];
+}
+
+async function extractZipArchive(buffer: Buffer, originalName: string): Promise<ZipExtractionResult> {
   let archive: JSZip;
   try {
     archive = await JSZip.loadAsync(buffer);
   } catch (error: any) {
     throw new Error(`ZIP ファイルの展開に失敗しました: ${error?.message || error}`);
   }
-  const entries: JSZipObject[] = Object.values(archive.files || {});
 
+  const entries: JSZipObject[] = Object.values(archive.files || {});
   if (!entries.length) {
     return {
-      text: `# ZIP 展開レポート: ${originalName}\n\n(アーカイブ内にファイルが見つかりませんでした。)`,
-      note: null,
+      summaryText: `# ZIP 展開レポート: ${originalName}\n\n(アーカイブ内にファイルが見つかりませんでした。)`,
+      summaryDescriptionLines: ['ZIP アーカイブから抽出したテキストです。'],
+      extractedFiles: [],
+      userNotes: ['ZIP アーカイブを展開しましたが、ファイルは含まれていませんでした。'],
     };
   }
 
+  const extractedFiles: ZipExtractedFileRecord[] = [];
   const textSections: string[] = [];
-  const skipped: string[] = [];
+  const nonTextEntries: string[] = [];
+  const skippedByLimit: string[] = [];
+  const failedEntries: string[] = [];
+
+  let processedCount = 0;
+  let totalExtractedBytes = 0;
 
   for (const entry of entries) {
     if (!entry || entry.dir) {
       continue;
     }
+
     const entryName = entry.name || 'unknown';
+    let entryBuffer: Buffer;
+    try {
+      const raw = await (entry as any).async('uint8array');
+      entryBuffer = Buffer.from(raw);
+    } catch (error: any) {
+      failedEntries.push(`${entryName} (${error?.message || error})`);
+      continue;
+    }
+
     const entryExt = getExtension(entryName);
-    if (isTextExtension(entryExt)) {
-      const content = await entry.async('string');
+    const normalizedMime = resolveMimeType({
+      buffer: entryBuffer,
+      mimeType: '',
+      extension: entryExt,
+    }).toLowerCase();
+
+    if (
+      processedCount >= MAX_ZIP_EXTRACT_FILES ||
+      totalExtractedBytes + entryBuffer.length > MAX_ZIP_EXTRACT_BYTES
+    ) {
+      skippedByLimit.push(`${entryName} (${formatBytes(entryBuffer.length)})`);
+      continue;
+    }
+
+    const sanitizedName = sanitizeZipEntryDisplayName(entryName, processedCount, entryExt);
+    const description = `ZIP アーカイブ ${originalName} から抽出したファイルです。元のパス: ${entryName}`;
+
+    extractedFiles.push({
+      buffer: entryBuffer,
+      displayName: sanitizedName,
+      mimeType: normalizedMime,
+      description,
+    });
+
+    processedCount += 1;
+    totalExtractedBytes += entryBuffer.length;
+
+    if (isProbablyTextMime(normalizedMime, entryExt)) {
+      const content = entryBuffer.toString('utf8');
       textSections.push(`## ${entryName}\n${content}`.trim());
     } else {
-      skipped.push(entryName);
+      nonTextEntries.push(entryName);
     }
   }
 
@@ -894,15 +1021,55 @@ async function buildZipSummaryText(buffer: Buffer, originalName: string): Promis
   let summary = `# ZIP 展開レポート: ${originalName}`;
   summary += `\n\n${textSections.join('\n\n')}`;
 
-  let note: string | null = null;
-  if (skipped.length) {
-    summary += `\n\n---\nテキスト変換されなかったファイル:\n${skipped
+  if (nonTextEntries.length) {
+    summary += `\n\n---\nテキスト変換されなかったファイル:\n${nonTextEntries
       .map((name) => `- ${name}`)
       .join('\n')}`;
-    note = '一部のファイルはテキストに変換できなかったため、一覧として記録しました。';
   }
 
-  return { text: summary, note };
+  if (skippedByLimit.length) {
+    summary += `\n\n---\nサイズや件数の制限で抽出されなかったファイル:\n${skippedByLimit
+      .map((name) => `- ${name}`)
+      .join('\n')}`;
+  }
+
+  if (failedEntries.length) {
+    summary += `\n\n---\n読み取りに失敗したファイル:\n${failedEntries
+      .map((name) => `- ${name}`)
+      .join('\n')}`;
+  }
+
+  const summaryDescriptionLines = ['ZIP アーカイブから抽出したテキストです。'];
+  if (nonTextEntries.length) {
+    summaryDescriptionLines.push('一部のファイルはバイナリ形式のためテキスト化せず一覧化しています。');
+  }
+  if (skippedByLimit.length) {
+    summaryDescriptionLines.push(
+      `サイズまたは件数の制限で ${skippedByLimit.length} 件のファイルをスキップしました。`
+    );
+  }
+  if (failedEntries.length) {
+    summaryDescriptionLines.push(`${failedEntries.length} 件のファイルは読み取りに失敗しました。`);
+  }
+
+  const userNotes: string[] = [];
+  userNotes.push('ZIP アーカイブを展開してテキスト化しました。');
+  if (extractedFiles.length) {
+    userNotes.push(`ZIP アーカイブから ${extractedFiles.length} 件のファイルを保存しました。`);
+  }
+  if (skippedByLimit.length) {
+    userNotes.push(`サイズまたは件数の制限で ${skippedByLimit.length} 件のファイルをスキップしました。`);
+  }
+  if (failedEntries.length) {
+    userNotes.push(`${failedEntries.length} 件のファイルの読み取りに失敗しました。`);
+  }
+
+  return {
+    summaryText: summary,
+    summaryDescriptionLines,
+    extractedFiles,
+    userNotes,
+  };
 }
 
 function createMediaAnalysisSummary(
@@ -981,7 +1148,7 @@ interface ResolvedStore {
 }
 
 async function resolveStoreForUpload(params: ResolveStoreParams): Promise<ResolvedStore | null> {
-  const { supabase, admin, staff, res } = params;
+  const { admin, staff, res } = params;
   let { fileStoreId = '', fileStoreName = '' } = params;
 
   fileStoreId = (fileStoreId || '').trim();
@@ -991,7 +1158,7 @@ async function resolveStoreForUpload(params: ResolveStoreParams): Promise<Resolv
   let storeError = null;
 
   if (fileStoreId) {
-    const { data, error } = await supabase
+    const { data, error } = await admin
       .from('file_stores')
       .select('id, gemini_store_name, organization_id, office_id')
       .eq('id', fileStoreId)
@@ -999,7 +1166,7 @@ async function resolveStoreForUpload(params: ResolveStoreParams): Promise<Resolv
     storeRow = data;
     storeError = error;
   } else if (fileStoreName) {
-    const { data, error } = await supabase
+    const { data, error } = await admin
       .from('file_stores')
       .select('id, gemini_store_name, organization_id, office_id')
       .eq('gemini_store_name', fileStoreName)
@@ -1012,7 +1179,9 @@ async function resolveStoreForUpload(params: ResolveStoreParams): Promise<Resolv
   }
 
   if (storeError) {
-    throw new Error(storeError.message);
+    console.error('Supabase file store lookup error:', storeError);
+    respond(res, 500, { error: 'ファイルストアの取得に失敗しました。' });
+    return null;
   }
 
   if (!storeRow) {
