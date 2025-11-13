@@ -56,6 +56,41 @@ const TEXTUAL_EXTENSIONS = new Set([
 const IMAGE_PREFIX = 'image/';
 const VIDEO_PREFIX = 'video/';
 
+const GENERIC_MIME_TYPES = new Set([
+  '',
+  'application/octet-stream',
+  'binary/octet-stream',
+  'application/unknown',
+  'unknown/unknown',
+]);
+
+const EXTENSION_MIME_MAP = new Map<string, string>([
+  ['jpg', 'image/jpeg'],
+  ['jpeg', 'image/jpeg'],
+  ['png', 'image/png'],
+  ['gif', 'image/gif'],
+  ['bmp', 'image/bmp'],
+  ['webp', 'image/webp'],
+  ['tif', 'image/tiff'],
+  ['tiff', 'image/tiff'],
+  ['heic', 'image/heic'],
+  ['heif', 'image/heif'],
+  ['avif', 'image/avif'],
+  ['mp4', 'video/mp4'],
+  ['m4v', 'video/mp4'],
+  ['mov', 'video/quicktime'],
+  ['qt', 'video/quicktime'],
+  ['avi', 'video/x-msvideo'],
+  ['webm', 'video/webm'],
+  ['mkv', 'video/x-matroska'],
+  ['mpg', 'video/mpeg'],
+  ['mpeg', 'video/mpeg'],
+  ['mpg4', 'video/mp4'],
+  ['3gp', 'video/3gpp'],
+  ['3g2', 'video/3gpp2'],
+  ['zip', 'application/zip'],
+]);
+
 function getExtension(filename?: string | null): string {
   const ext = extname(String(filename || '')).toLowerCase();
   return ext.startsWith('.') ? ext.slice(1) : ext;
@@ -79,6 +114,142 @@ function isImageMime(mimeType: string): boolean {
 
 function isVideoMime(mimeType: string): boolean {
   return mimeType.startsWith(VIDEO_PREFIX);
+}
+
+function normalizeMimeCandidate(value: string): string {
+  return value.split(';')[0]?.trim().toLowerCase() || '';
+}
+
+function isGenericMime(mimeType: string): boolean {
+  return GENERIC_MIME_TYPES.has(normalizeMimeCandidate(mimeType));
+}
+
+function detectMimeTypeFromBuffer(buffer: Buffer): string | null {
+  if (!buffer || buffer.length < 4) {
+    return null;
+  }
+
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+
+  if (buffer.length >= 6) {
+    const header = buffer.subarray(0, 6).toString('ascii');
+    if (header === 'GIF87a' || header === 'GIF89a') {
+      return 'image/gif';
+    }
+  }
+
+  if (buffer.length >= 4) {
+    const ascii4 = buffer.subarray(0, 4).toString('ascii');
+    if (ascii4 === 'RIFF' && buffer.length >= 12) {
+      const riffType = buffer.subarray(8, 12).toString('ascii');
+      if (riffType === 'WEBP') {
+        return 'image/webp';
+      }
+      if (riffType === 'AVI ') {
+        return 'video/x-msvideo';
+      }
+    }
+    if (buffer.length >= 12) {
+      const boxType = buffer.subarray(4, 8).toString('ascii');
+      if (boxType === 'ftyp') {
+        const brand = buffer.subarray(8, 12).toString('ascii');
+        const trimmed = brand.trim();
+        const lower = trimmed.toLowerCase();
+        if (
+          [
+            'isom',
+            'iso2',
+            'mp41',
+            'mp42',
+            'avc1',
+            'msnv',
+            'ndas',
+            'f4v',
+            'm4v',
+            '3gp5',
+            '3g2a',
+          ].includes(lower)
+        ) {
+          return 'video/mp4';
+        }
+        if (lower === 'qt' || brand === 'qt  ') {
+          return 'video/quicktime';
+        }
+        if (lower.startsWith('he') || lower === 'mif1' || lower === 'msf1') {
+          return 'image/heic';
+        }
+        if (lower.startsWith('avif')) {
+          return 'image/avif';
+        }
+      }
+    }
+  }
+
+  if (buffer.length >= 4) {
+    const tiffLittleEndian = buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2a && buffer[3] === 0x00;
+    const tiffBigEndian = buffer[0] === 0x4d && buffer[1] === 0x4d && buffer[2] === 0x00 && buffer[3] === 0x2a;
+    if (tiffLittleEndian || tiffBigEndian) {
+      return 'image/tiff';
+    }
+  }
+
+  if (buffer.length >= 2) {
+    const bmp = buffer[0] === 0x42 && buffer[1] === 0x4d;
+    if (bmp) {
+      return 'image/bmp';
+    }
+  }
+
+  if (buffer.length >= 4 && buffer[0] === 0x00 && buffer[1] === 0x00 && buffer[2] === 0x01 && buffer[3] === 0xba) {
+    return 'video/mpeg';
+  }
+
+  return null;
+}
+
+function resolveMimeType({
+  buffer,
+  mimeType,
+  extension,
+}: {
+  buffer: Buffer;
+  mimeType: string;
+  extension: string;
+}): string {
+  let candidate = normalizeMimeCandidate(mimeType);
+  if (!isGenericMime(candidate)) {
+    return candidate;
+  }
+
+  if (extension) {
+    const mapped = EXTENSION_MIME_MAP.get(extension);
+    if (mapped) {
+      return mapped;
+    }
+  }
+
+  const detected = detectMimeTypeFromBuffer(buffer);
+  if (detected) {
+    return detected;
+  }
+
+  return candidate || 'application/octet-stream';
 }
 
 function isTextExtension(extension: string): boolean {
@@ -489,8 +660,12 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
   const analyses: GeminiMediaAnalysisResult[] = [];
   const notes: string[] = [];
 
-  const normalizedMime = (context.mimeType || 'application/octet-stream').toLowerCase();
   const extension = getExtension(context.originalFilename || context.displayName);
+  const normalizedMime = resolveMimeType({
+    buffer: context.fileBuffer,
+    mimeType: context.mimeType || 'application/octet-stream',
+    extension,
+  }).toLowerCase();
   const baseDescription = context.memo?.trim() ? context.memo.trim() : null;
 
   const upload = async (params: {
