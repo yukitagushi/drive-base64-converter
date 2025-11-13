@@ -5,7 +5,7 @@ import {
   resolveStaffForRequest,
   isSupabaseConfigured,
 } from '../lib/api-auth';
-import { GeminiApiError } from '../lib/gemini';
+import { GeminiApiError, ensureGeminiEnvironment } from '../lib/gemini';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { GeminiKnowledgeBase } = require('../lib/gemini.js');
@@ -25,6 +25,46 @@ function applyCors(req: VercelRequest, res: VercelResponse) {
 
 function respond(res: VercelResponse, status: number, payload: Record<string, any>) {
   res.status(status).json({ source: 'api', status, ...payload });
+}
+
+function compactGeminiBody(body: any): any {
+  if (body == null) {
+    return null;
+  }
+  if (typeof body === 'string') {
+    return body.length > 2000 ? `${body.slice(0, 2000)}…` : body;
+  }
+  try {
+    const serialized = JSON.stringify(body);
+    if (serialized.length > 2000) {
+      return `${serialized.slice(0, 2000)}…`;
+    }
+    return JSON.parse(serialized);
+  } catch {
+    return body;
+  }
+}
+
+function serializeGeminiError(error: unknown): Record<string, any> {
+  if (error instanceof GeminiApiError) {
+    return {
+      name: error.name,
+      message: error.message,
+      status: error.status ?? null,
+      debugId: error.debugId ?? null,
+      body: compactGeminiBody(error.body),
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+  }
+
+  return { value: error };
 }
 
 async function ensureKnowledgeReady() {
@@ -249,6 +289,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       supabaseConfigured: supabaseEnabled,
     };
 
+    try {
+      ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
+    } catch (envError: any) {
+      respond(res, 500, {
+        error:
+          envError?.message || 'Gemini の環境変数 (GEMINI_API_KEY または GOOGLE_API_KEY) を確認してください。',
+      });
+      return;
+    }
+
     let thread: any = null;
     let threads: any[] = [];
 
@@ -322,16 +372,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       throw error;
     }
   } catch (error: any) {
-    console.error('Error in /api/chat:', error);
-    if (error instanceof GeminiApiError) {
-      respond(res, error.status || 500, {
-        error: error.message,
-        debugId: error.debugId || null,
-        source: 'gemini',
-        status: error.status || 500,
+    console.error('api/chat failed', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        source: 'api',
+        error: 'chat_failed',
+        geminiError: serializeGeminiError(error),
       });
-      return;
     }
-    respond(res, 500, { error: error?.message || 'Internal Server Error' });
   }
 }
