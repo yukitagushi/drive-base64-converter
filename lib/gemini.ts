@@ -279,9 +279,9 @@ export async function uploadFileToStore(options: {
   if (options.displayName) {
     metadata.displayName = options.displayName;
   }
-  if (options.description) {
-    metadata.description = options.description;
-  }
+  // NOTE: Gemini's upload metadata currently rejects unknown fields such as
+  // "description", so we persist descriptions only in Supabase instead of the
+  // API payload to avoid 400 Invalid JSON errors.
 
   const fileBytes = Buffer.isBuffer(options.fileBuffer)
     ? new Uint8Array(options.fileBuffer)
