@@ -442,6 +442,53 @@ function scheduleAuthRecovery(message) {
   });
 }
 
+function appendAccessTokenToBody(originalBody, token) {
+  if (!token || !originalBody) {
+    return originalBody;
+  }
+
+  if (typeof FormData !== 'undefined' && originalBody instanceof FormData) {
+    if (!originalBody.has('accessToken')) {
+      originalBody.set('accessToken', token);
+    }
+    return originalBody;
+  }
+
+  const contentType = typeof originalBody === 'string' ? 'string' : typeof originalBody;
+
+  if (contentType === 'string') {
+    try {
+      const parsed = originalBody ? JSON.parse(originalBody) : {};
+      if (typeof parsed === 'object' && parsed !== null && !parsed.accessToken) {
+        parsed.accessToken = token;
+        return JSON.stringify(parsed);
+      }
+    } catch (error) {
+      console.warn('Failed to append access token to request body:', error);
+    }
+    return originalBody;
+  }
+
+  if (contentType === 'object') {
+    try {
+      const cloned = Array.isArray(originalBody) ? [...originalBody] : { ...originalBody };
+      if (
+        cloned &&
+        typeof cloned === 'object' &&
+        !Array.isArray(cloned) &&
+        typeof cloned.accessToken === 'undefined'
+      ) {
+        cloned.accessToken = token;
+        return cloned;
+      }
+    } catch (error) {
+      console.warn('Failed to clone request body for access token injection:', error);
+    }
+  }
+
+  return originalBody;
+}
+
 async function safeFetch(url, options = {}) {
   const { skipAuthHandling = false, ...fetchOptions } = options || {};
   const mergedHeaders = { ...(fetchOptions?.headers || {}) };
@@ -452,14 +499,20 @@ async function safeFetch(url, options = {}) {
     mergedHeaders['Content-Type'] = 'application/json';
   }
   const hasAuthorization = Object.keys(mergedHeaders).some((key) => key.toLowerCase() === 'authorization');
+  let token = null;
   if (!hasAuthorization) {
-    const token = await getSupabaseAccessToken();
+    token = await getSupabaseAccessToken();
     if (token) {
       mergedHeaders.Authorization = `Bearer ${token}`;
     }
   }
 
-  const response = await fetch(url, { ...fetchOptions, headers: mergedHeaders });
+  let bodyWithToken = requestBody;
+  if (!hasAuthorization && token) {
+    bodyWithToken = appendAccessTokenToBody(requestBody, token);
+  }
+
+  const response = await fetch(url, { ...fetchOptions, headers: mergedHeaders, body: bodyWithToken });
   const contentType = response.headers.get('content-type') || '';
   const isJson = contentType.includes('application/json');
   const responseBody = isJson ? await response.json() : await response.text();
