@@ -1,13 +1,13 @@
 const { getFileSearchService, getSupabaseService } = require('../lib/serverContext');
 
-function firstValue(value: string | string[] | undefined): string | undefined {
+function firstValue(value) {
   if (Array.isArray(value)) {
     return value[0];
   }
   return value;
 }
 
-export default async function handler(req: any, res: any) {
+async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       await handleGet(req, res);
@@ -21,13 +21,13 @@ export default async function handler(req: any, res: any) {
 
     res.setHeader('Allow', 'GET, POST');
     res.status(405).json({ error: 'Method Not Allowed' });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in /api/file-stores:', error);
     res.status(500).json({ error: error?.message || 'Internal Server Error' });
   }
 }
 
-async function handleGet(req: any, res: any) {
+async function handleGet(req, res) {
   const fileSearch = await getFileSearchService();
   if (!fileSearch?.apiKey) {
     res.status(400).json({ error: 'ファイルストアを利用するには GOOGLE_API_KEY を設定してください。' });
@@ -42,7 +42,7 @@ async function handleGet(req: any, res: any) {
   if (supabase.isConfigured() && officeId) {
     try {
       stores = await supabase.decorateStoresForOffice(stores, officeId);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Supabase store decoration failed:', error?.message || error);
     }
   }
@@ -50,7 +50,7 @@ async function handleGet(req: any, res: any) {
   res.status(200).json({ stores });
 }
 
-async function handlePost(req: any, res: any) {
+async function handlePost(req, res) {
   const fileSearch = await getFileSearchService();
   if (!fileSearch?.apiKey) {
     res.status(400).json({ error: 'ファイルストアを利用するには GOOGLE_API_KEY を設定してください。' });
@@ -80,10 +80,13 @@ async function handlePost(req: any, res: any) {
           displayName: store.displayName || displayName,
         });
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Supabase store record error:', error?.message || error);
     }
   }
 
   res.status(201).json({ store });
 }
+
+module.exports = handler;
+module.exports.default = handler;

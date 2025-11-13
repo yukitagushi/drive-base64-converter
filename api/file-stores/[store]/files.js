@@ -1,13 +1,13 @@
 const { getFileSearchService, getSupabaseService } = require('../../../lib/serverContext');
 
-function firstValue(value: string | string[] | undefined): string | undefined {
+function firstValue(value) {
   if (Array.isArray(value)) {
     return value[0];
   }
   return value;
 }
 
-export default async function handler(req: any, res: any) {
+async function handler(req, res) {
   const storeName = firstValue(req.query?.store);
 
   if (!storeName) {
@@ -28,13 +28,13 @@ export default async function handler(req: any, res: any) {
 
     res.setHeader('Allow', 'GET, POST');
     res.status(405).json({ error: 'Method Not Allowed' });
-  } catch (error: any) {
+  } catch (error) {
     console.error(`Error in /api/file-stores/${storeName}/files:`, error);
     res.status(500).json({ error: error?.message || 'Internal Server Error' });
   }
 }
 
-async function handleGet(storeName: string, res: any) {
+async function handleGet(storeName, res) {
   const fileSearch = await getFileSearchService();
   if (!fileSearch?.apiKey) {
     res.status(400).json({ error: 'ファイルストアを利用するには GOOGLE_API_KEY を設定してください。' });
@@ -45,7 +45,7 @@ async function handleGet(storeName: string, res: any) {
   res.status(200).json({ files });
 }
 
-async function handlePost(storeName: string, req: any, res: any) {
+async function handlePost(storeName, req, res) {
   const fileSearch = await getFileSearchService();
   if (!fileSearch?.apiKey) {
     res.status(400).json({ error: 'ファイルストアを利用するには GOOGLE_API_KEY を設定してください。' });
@@ -82,10 +82,13 @@ async function handlePost(storeName: string, req: any, res: any) {
           mimeType: derivedMimeType,
         });
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Supabase upload log error:', error?.message || error);
     }
   }
 
   res.status(201).json({ file });
 }
+
+module.exports = handler;
+module.exports.default = handler;

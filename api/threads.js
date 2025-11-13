@@ -5,8 +5,8 @@ const {
   buildSessionPayload,
 } = require('../lib/serverState');
 
-function parseBody(req: any) {
-  if (!req?.body) {
+function parseBody(req) {
+  if (!req || !req.body) {
     return {};
   }
   if (typeof req.body === 'string') {
@@ -23,7 +23,7 @@ function parseBody(req: any) {
   return {};
 }
 
-function generateThreadTitle(text: string): string {
+function generateThreadTitle(text) {
   if (!text) {
     return '新しい質問';
   }
@@ -35,7 +35,7 @@ function generateThreadTitle(text: string): string {
   return normalized.length > 28 ? `${snippet}…` : snippet;
 }
 
-export default async function handler(req: any, res: any) {
+async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       await handleGet(res);
@@ -49,13 +49,13 @@ export default async function handler(req: any, res: any) {
 
     res.setHeader('Allow', 'GET, POST');
     res.status(405).json({ error: 'Method Not Allowed' });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in /api/threads:', error);
     res.status(500).json({ error: error?.message || 'Internal Server Error' });
   }
 }
 
-async function handleGet(res: any) {
+async function handleGet(res) {
   const supabase = getSupabaseService();
   const auth = getAuthState();
 
@@ -68,7 +68,7 @@ async function handleGet(res: any) {
   res.status(200).json(payload);
 }
 
-async function handlePost(req: any, res: any) {
+async function handlePost(req, res) {
   const supabase = getSupabaseService();
   if (supabase.isConfigured() && !getAuthState().staff) {
     res.status(403).json({ error: 'スレッドを作成するにはログインが必要です。' });
@@ -78,7 +78,7 @@ async function handlePost(req: any, res: any) {
   let body;
   try {
     body = parseBody(req);
-  } catch (error: any) {
+  } catch (error) {
     res.status(400).json({ error: error?.message || 'JSON 形式で送信してください。' });
     return;
   }
@@ -100,8 +100,11 @@ async function handlePost(req: any, res: any) {
 
     const payload = await buildSessionPayload();
     res.status(201).json(payload);
-  } catch (error: any) {
+  } catch (error) {
     console.error('Supabase thread create error:', error?.message || error);
     res.status(502).json({ error: 'スレッドの作成に失敗しました' });
   }
 }
+
+module.exports = handler;
+module.exports.default = handler;

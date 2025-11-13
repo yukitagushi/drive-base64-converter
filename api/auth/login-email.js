@@ -7,8 +7,8 @@ const {
   resetSessionAfterLogout,
 } = require('../../lib/serverState');
 
-function parseBody(req: any) {
-  if (!req?.body) {
+function parseBody(req) {
+  if (!req || !req.body) {
     return {};
   }
   if (typeof req.body === 'string') {
@@ -25,7 +25,7 @@ function parseBody(req: any) {
   return {};
 }
 
-export default async function handler(req: any, res: any) {
+async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     res.status(405).json({ error: 'Method Not Allowed' });
@@ -33,10 +33,10 @@ export default async function handler(req: any, res: any) {
   }
 
   const supabase = getSupabaseService();
-  let payload: any = {};
+  let payload = {};
   try {
     payload = parseBody(req);
-  } catch (error: any) {
+  } catch (error) {
     res.status(400).json({ error: error?.message || 'JSON 形式で送信してください。' });
     return;
   }
@@ -51,7 +51,7 @@ export default async function handler(req: any, res: any) {
 
   try {
     const result = await supabase.signInWithPassword({ email, password });
-    if (!result?.staff) {
+    if (!result || !result.staff) {
       throw new Error('スタッフ情報が見つかりません。管理者にお問い合わせください。');
     }
 
@@ -90,7 +90,7 @@ export default async function handler(req: any, res: any) {
     if (supabase.isConfigured() && staff.id) {
       supabase
         .recordAuthEvent({ staffId: staff.id, type: 'login' })
-        .catch((error: any) => console.error('Supabase auth event error:', error?.message || error));
+        .catch((error) => console.error('Supabase auth event error:', error?.message || error));
     }
 
     const [authPayload, sessionPayload] = await Promise.all([
@@ -99,10 +99,13 @@ export default async function handler(req: any, res: any) {
     ]);
 
     res.status(200).json({ auth: authPayload, session: sessionPayload });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Login error:', error?.message || error);
     clearAuthContext();
     await resetSessionAfterLogout();
     res.status(400).json({ error: error?.message || 'ログインに失敗しました。' });
   }
 }
+
+module.exports = handler;
+module.exports.default = handler;

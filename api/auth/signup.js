@@ -1,9 +1,6 @@
-import { getSupabaseAdmin } from '../../lib/supabaseAdmin';
+const { getSupabaseAdmin } = require('../../lib/supabaseAdmin');
 
-type Request = any;
-type Response = any;
-
-export default async function handler(req: Request, res: Response) {
+async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     res.status(405).json({ error: 'Method Not Allowed' });
@@ -13,20 +10,20 @@ export default async function handler(req: Request, res: Response) {
   let admin;
   try {
     admin = getSupabaseAdmin();
-  } catch (error: any) {
+  } catch (error) {
     console.error('Supabase admin init error:', error);
     res.status(500).json({ error: 'Supabase 管理クライアントの初期化に失敗しました。' });
     return;
   }
 
-  let payload: any = {};
+  let payload = {};
   try {
     if (typeof req.body === 'string') {
       payload = req.body ? JSON.parse(req.body) : {};
     } else if (req.body && typeof req.body === 'object') {
       payload = req.body;
     }
-  } catch (error: any) {
+  } catch (error) {
     res.status(400).json({ error: 'JSON 形式で送信してください。' });
     return;
   }
@@ -74,13 +71,13 @@ export default async function handler(req: Request, res: Response) {
     });
 
     res.status(201).json({ ok: true, userId: user.id, officeId: staff.officeId, staffId: staff.id });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in /api/auth/signup:', error);
     res.status(500).json({ error: error?.message || 'サインアップ処理に失敗しました。' });
   }
 }
 
-async function ensureOrganization(admin: any, name: string): Promise<{ id: string }> {
+async function ensureOrganization(admin, name) {
   const label = name ? name.trim() : '';
   if (label) {
     const { data, error } = await admin
@@ -105,7 +102,11 @@ async function ensureOrganization(admin: any, name: string): Promise<{ id: strin
     return created;
   }
 
-  const { data, error } = await admin.from('organizations').select('id').order('created_at', { ascending: true }).limit(1);
+  const { data, error } = await admin
+    .from('organizations')
+    .select('id')
+    .order('created_at', { ascending: true })
+    .limit(1);
   if (error) {
     throw new Error(error.message);
   }
@@ -123,7 +124,7 @@ async function ensureOrganization(admin: any, name: string): Promise<{ id: strin
   return created;
 }
 
-async function ensureOffice(admin: any, organizationId: string, name: string): Promise<{ id: string }> {
+async function ensureOffice(admin, organizationId, name) {
   const label = name ? name.trim() : '';
   if (label) {
     const { data, error } = await admin
@@ -152,10 +153,7 @@ async function ensureOffice(admin: any, organizationId: string, name: string): P
   return data;
 }
 
-async function ensureStaffProfile(
-  admin: any,
-  params: { userId: string; email: string; displayName: string; officeId: string }
-): Promise<{ id: string; officeId: string }> {
+async function ensureStaffProfile(admin, params) {
   const { userId, email, displayName, officeId } = params;
   const { data: existing, error: existingError } = await admin
     .from('staff_profiles')
@@ -185,3 +183,6 @@ async function ensureStaffProfile(
   }
   return { id: data.id, officeId: data.office_id };
 }
+
+module.exports = handler;
+module.exports.default = handler;

@@ -1,6 +1,6 @@
 const { ensureKnowledge } = require('../lib/serverContext');
 
-export default async function handler(req: any, res: any) {
+async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       await handleGet(res);
@@ -14,19 +14,19 @@ export default async function handler(req: any, res: any) {
 
     res.setHeader('Allow', 'GET, POST');
     res.status(405).json({ error: 'Method Not Allowed' });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in /api/documents:', error);
     res.status(500).json({ error: error?.message || 'Internal Server Error' });
   }
 }
 
-async function handleGet(res: any) {
+async function handleGet(res) {
   const knowledge = await ensureKnowledge();
   const documents = typeof knowledge?.listDocuments === 'function' ? knowledge.listDocuments() : [];
   res.status(200).json({ documents });
 }
 
-async function handlePost(req: any, res: any) {
+async function handlePost(req, res) {
   const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
   const title = body.title;
   const content = body.content;
@@ -37,7 +37,10 @@ async function handlePost(req: any, res: any) {
     const entry = await knowledge.addUserDocument({ title, content });
     const documents = typeof knowledge?.listDocuments === 'function' ? knowledge.listDocuments() : [];
     res.status(201).json({ document: entry, documents });
-  } catch (error: any) {
+  } catch (error) {
     res.status(400).json({ error: error?.message || 'ドキュメントの追加に失敗しました' });
   }
 }
+
+module.exports = handler;
+module.exports.default = handler;

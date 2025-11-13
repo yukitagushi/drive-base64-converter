@@ -7,8 +7,8 @@ const {
   getAuthState,
 } = require('../lib/serverState');
 
-function parseBody(req: any) {
-  if (!req?.body) {
+function parseBody(req) {
+  if (!req || !req.body) {
     return {};
   }
   if (typeof req.body === 'string') {
@@ -25,7 +25,7 @@ function parseBody(req: any) {
   return {};
 }
 
-export default async function handler(req: any, res: any) {
+async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       const payload = await buildSessionPayload();
@@ -40,18 +40,18 @@ export default async function handler(req: any, res: any) {
 
     res.setHeader('Allow', 'GET, POST');
     res.status(405).json({ error: 'Method Not Allowed' });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in /api/session:', error);
     res.status(500).json({ error: error?.message || 'Internal Server Error' });
   }
 }
 
-async function handlePost(req: any, res: any) {
+async function handlePost(req, res) {
   const supabase = getSupabaseService();
   let body;
   try {
     body = parseBody(req);
-  } catch (error: any) {
+  } catch (error) {
     res.status(400).json({ error: error?.message || 'JSON 形式で送信してください。' });
     return;
   }
@@ -73,7 +73,7 @@ async function handlePost(req: any, res: any) {
       if (session.staffId && previousStaff !== session.staffId) {
         await supabase.recordAuthEvent({ staffId: session.staffId, type: 'login' });
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Supabase auth event error:', error?.message || error);
     }
   }
@@ -87,3 +87,6 @@ async function handlePost(req: any, res: any) {
 
   res.status(200).json(response);
 }
+
+module.exports = handler;
+module.exports.default = handler;

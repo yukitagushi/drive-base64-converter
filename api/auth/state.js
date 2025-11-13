@@ -1,6 +1,6 @@
 const { buildAuthPayload } = require('../../lib/serverState');
 
-export default async function handler(req: any, res: any) {
+async function handler(req, res) {
   try {
     if (req.method !== 'GET') {
       res.setHeader('Allow', 'GET');
@@ -10,8 +10,11 @@ export default async function handler(req: any, res: any) {
 
     const payload = await buildAuthPayload();
     res.status(200).json(payload);
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in /api/auth/state:', error);
     res.status(500).json({ error: error?.message || 'Internal Server Error' });
   }
 }
+
+module.exports = handler;
+module.exports.default = handler;

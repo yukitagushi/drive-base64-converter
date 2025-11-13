@@ -1,6 +1,6 @@
 const { ensureKnowledge, getSupabaseService, getFileSearchService } = require('../lib/serverContext');
 
-function normalizeHistory(list: any): Array<{ role: string; content: string }> {
+function normalizeHistory(list) {
   if (!Array.isArray(list)) {
     return [];
   }
@@ -12,7 +12,7 @@ function normalizeHistory(list: any): Array<{ role: string; content: string }> {
     .filter((item) => item.content);
 }
 
-function generateThreadTitle(text: string): string {
+function generateThreadTitle(text) {
   if (!text) {
     return '新しい質問';
   }
@@ -24,7 +24,7 @@ function generateThreadTitle(text: string): string {
   return normalized.length > 28 ? `${snippet}…` : snippet;
 }
 
-export default async function handler(req: any, res: any) {
+async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     res.status(405).json({ error: 'Method Not Allowed' });
@@ -47,7 +47,7 @@ export default async function handler(req: any, res: any) {
     const history = normalizeHistory(body.history);
 
     const requestedStores = Array.isArray(body.stores)
-      ? body.stores.map((name: any) => String(name || '').trim()).filter(Boolean)
+      ? body.stores.map((name) => String(name || '').trim()).filter(Boolean)
       : [];
 
     const sessionInput = body.session || {};
@@ -59,12 +59,12 @@ export default async function handler(req: any, res: any) {
       supabaseConfigured: supabase.isConfigured(),
     };
 
-    let officeStoreNames: string[] = [];
+    let officeStoreNames = [];
     if (supabase.isConfigured() && session.officeId) {
       try {
         const officeStores = await supabase.listOfficeFileStores(session.officeId);
-        officeStoreNames = officeStores.map((store: any) => store.geminiStoreName).filter(Boolean);
-      } catch (error: any) {
+        officeStoreNames = officeStores.map((store) => store.geminiStoreName).filter(Boolean);
+      } catch (error) {
         console.error('Supabase office store lookup failed:', error?.message || error);
       }
     }
@@ -86,7 +86,7 @@ export default async function handler(req: any, res: any) {
 
         if (fsResult?.answer) {
           source = 'file-search';
-          const context = (fsResult.citations || []).map((citation: any, index: number) => ({
+          const context = (fsResult.citations || []).map((citation, index) => ({
             id: citation.sourceId || `file-search-${index + 1}`,
             title: citation.sourceTitle || citation.sourceId || `関連ドキュメント ${index + 1}`,
             snippet: citation.chunkText || '',
@@ -97,7 +97,7 @@ export default async function handler(req: any, res: any) {
             raw: fsResult.raw,
           };
         }
-      } catch (error: any) {
+      } catch (error) {
         console.error('Gemini File Search chat error:', error?.message || error);
       }
     }
@@ -109,7 +109,7 @@ export default async function handler(req: any, res: any) {
     }
 
     let thread = null;
-    let threads = undefined;
+    let threads;
 
     if (supabase.isConfigured()) {
       if (!session.officeId || !session.staffId) {
@@ -143,12 +143,12 @@ export default async function handler(req: any, res: any) {
               items: result.context,
             },
           });
-          threads = await supabase.listThreads({ officeId: session.officeId }).catch((error: any) => {
+          threads = await supabase.listThreads({ officeId: session.officeId }).catch((error) => {
             console.error('Supabase thread list error:', error?.message || error);
             return [];
           });
         }
-      } catch (error: any) {
+      } catch (error) {
         console.error('Supabase chat logging error:', error?.message || error);
       }
     }
@@ -161,8 +161,11 @@ export default async function handler(req: any, res: any) {
       threads,
       session,
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in /api/chat:', error);
     res.status(400).json({ error: error?.message || 'Gemini チャットの呼び出しに失敗しました' });
   }
 }
+
+module.exports = handler;
+module.exports.default = handler;

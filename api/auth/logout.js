@@ -7,7 +7,7 @@ const {
   resetSessionAfterLogout,
 } = require('../../lib/serverState');
 
-export default async function handler(req: any, res: any) {
+async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     res.status(405).json({ error: 'Method Not Allowed' });
@@ -19,7 +19,7 @@ export default async function handler(req: any, res: any) {
 
   try {
     if (auth?.tokens?.accessToken) {
-      await supabase.signOut(auth.tokens.accessToken).catch((error: any) => {
+      await supabase.signOut(auth.tokens.accessToken).catch((error) => {
         console.error('Supabase sign-out failed:', error?.message || error);
       });
     }
@@ -27,9 +27,9 @@ export default async function handler(req: any, res: any) {
     if (supabase.isConfigured() && auth?.staff?.id) {
       await supabase
         .recordAuthEvent({ staffId: auth.staff.id, type: 'logout' })
-        .catch((error: any) => console.error('Supabase auth event error:', error?.message || error));
+        .catch((error) => console.error('Supabase auth event error:', error?.message || error));
     }
-  } catch (error: any) {
+  } catch (error) {
     console.error('Logout handling error:', error?.message || error);
   }
 
@@ -43,3 +43,6 @@ export default async function handler(req: any, res: any) {
 
   res.status(200).json({ auth: authPayload, session: sessionPayload });
 }
+
+module.exports = handler;
+module.exports.default = handler;
