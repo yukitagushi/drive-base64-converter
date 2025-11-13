@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gemini Lounge</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="show-landing">
+    <div id="landing-screen" class="landing-screen" aria-labelledby="landing-title">
+      <header class="landing-hero">
+        <div class="landing-brand">
+          <span class="landing-mark">◎</span>
+          <div class="landing-text">
+            <p class="landing-label">Gemini Lounge</p>
+            <h1 id="landing-title" class="landing-title">ファイルサーチ対応 AI ナレッジ</h1>
+          </div>
+        </div>
+        <p class="landing-subtitle">
+          事業所向けに設計された Gemini ベースのサポート環境。アップロードした資料を検索しながら、
+          スタッフ同士でナレッジを共有できます。
+        </p>
+      </header>
+      <div class="landing-actions" role="group" aria-label="メイン操作">
+        <button id="auth-trigger" class="btn btn-solid btn-large" type="button">ログイン</button>
+        <button id="landing-request" class="btn btn-ghost" type="button">アカウント発行を申請</button>
+      </div>
+      <p class="landing-footnote">* ご契約済みの事業所のみログインできます。</p>
+    </div>
+
+    <div id="login-screen" class="login-screen">
+      <div class="login-screen__scene" aria-hidden="true">
+        <div class="login-sun"></div>
+        <div class="login-city"></div>
+        <div class="login-road"></div>
+      </div>
+      <div class="login-card" role="dialog" aria-labelledby="login-title">
+        <button id="login-back" class="login-back" type="button">← ラウンジに戻る</button>
+        <header class="login-card__header">
+          <span class="login-brand">Gemini Lounge</span>
+          <h1 id="login-title" class="login-title">チーム専用ログイン</h1>
+          <p class="login-subtitle">契約済みの事業所スタッフのみがアクセスできます。</p>
+        </header>
+        <div class="login-card__body">
+          <form id="login-form" class="login-form" autocomplete="off">
+            <label class="field">
+              <span class="field__label">メールアドレス</span>
+              <input type="email" id="login-email" name="email" autocomplete="email" required />
+            </label>
+            <label class="field">
+              <span class="field__label">ログインパスワード</span>
+              <input type="password" id="login-password" name="password" autocomplete="current-password" required minlength="6" />
+            </label>
+            <button class="btn btn-solid" type="submit">ログイン</button>
+            <p id="auth-feedback" class="form-error" role="alert"></p>
+          </form>
+          <p class="login-forgot">
+            <a
+              id="forgot-password"
+              class="login-link"
+              href="mailto:info@example.com?subject=%E3%83%91%E3%82%B9%E3%83%AF%E3%83%BC%E3%83%89%E5%86%8D%E8%A8%AD%E5%AE%9A%E3%81%AE%E3%81%8A%E5%90%91%E3%81%91"
+            >パスワードを忘れた方はこちら</a>
+          </p>
+          <div class="login-divider" role="presentation">
+            <span class="login-divider__line"></span>
+            <span class="login-divider__label">または連携ログイン</span>
+            <span class="login-divider__line"></span>
+          </div>
+          <div class="login-social">
+            <button id="google-login" class="btn btn-google" type="button">
+              <span class="btn-google__icon" aria-hidden="true">G</span>
+              <span>Google でログイン</span>
+            </button>
+            <p id="google-hint" class="field-hint"></p>
+          </div>
+          <div class="login-links">
+            <button id="account-request-trigger" class="login-link" type="button">初めてのご利用はこちら</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="app-shell">
+      <header class="top-bar">
+        <div class="top-bar__brand">
+          <span class="brand-mark">◎</span>
+          <div class="brand-copy">
+            <span class="brand-title">Gemini Lounge</span>
+            <span class="brand-subtitle">ファイルサーチ対応ナレッジシステム</span>
+          </div>
+        </div>
+        <div class="top-bar__actions">
+          <div class="action-group">
+            <button id="open-upload" class="btn btn-solid" type="button">ファイルをアップロード</button>
+            <button id="open-store" class="btn btn-outline" type="button">ストアを作成</button>
+          </div>
+          <div class="auth-cluster">
+            <div id="auth-user" class="auth-user" hidden>
+              <button
+                id="auth-user-button"
+                class="user-chip"
+                type="button"
+                aria-haspopup="true"
+                aria-expanded="false"
+              >
+                <span id="auth-user-initial" class="user-chip__initial" aria-hidden="true">U</span>
+                <span id="auth-user-label" class="user-chip__label">User</span>
+                <span class="user-chip__caret" aria-hidden="true">▾</span>
+              </button>
+              <div id="auth-menu" class="auth-menu" role="menu">
+                <div class="auth-menu__header">
+                  <p id="auth-menu-name" class="auth-menu__name"></p>
+                  <p id="auth-menu-email" class="auth-menu__email"></p>
+                </div>
+                <button id="auth-menu-logout" class="auth-menu__item" type="button" role="menuitem">
+                  ログアウト
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main class="main-grid">
+        <section class="panel chat-panel" aria-label="Gemini とのチャット">
+          <header class="panel__header">
+            <h1 class="panel__title">チャット</h1>
+            <p class="panel__subtitle">
+              右側のナレッジやファイルサーチストアを使って Gemini に質問できます。
+            </p>
+          </header>
+          <div id="message-list" class="message-list" role="log" aria-live="polite"></div>
+          <form id="chat-form" class="chat-form" autocomplete="off">
+            <label class="field">
+              <span class="field__label">質問</span>
+              <textarea
+                id="chat-input"
+                class="chat-input"
+                rows="1"
+                placeholder="Gemini に質問する..."
+                required
+              ></textarea>
+            </label>
+            <div class="chat-footer">
+              <span id="status-indicator" class="status-indicator"></span>
+              <button class="btn btn-solid" type="submit">送信</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="side-stack" aria-label="ナレッジ管理">
+          <section class="panel info-panel">
+            <header class="panel__header">
+              <h2 class="panel__title">チームセッション</h2>
+              <p class="panel__subtitle">
+                事業所とスタッフを選択し、スレッド単位で Gemini との会話を整理します。
+              </p>
+            </header>
+            <div class="panel__section grid gap-sm">
+              <label class="field">
+                <span class="field__label">事業所</span>
+                <select id="session-office" aria-label="事業所を選択"></select>
+              </label>
+              <label class="field">
+                <span class="field__label">スタッフ</span>
+                <select id="session-staff" aria-label="スタッフを選択"></select>
+              </label>
+            </div>
+            <div class="panel__section">
+              <div class="session-actions">
+                <button id="start-thread" class="btn btn-outline" type="button">新しいスレッドを開始</button>
+                <span class="session-hint">スレッドを切り替えると会話履歴が Supabase に保存されます。</span>
+              </div>
+            </div>
+            <div class="panel__section">
+              <h3 class="section-title">最近のスレッド</h3>
+              <div id="thread-list" class="thread-list"></div>
+            </div>
+          </section>
+
+          <section class="panel info-panel">
+            <header class="panel__header">
+              <h2 class="panel__title">Gemini API</h2>
+              <p class="panel__subtitle">ステータスを確認し、ファイルサーチを操作します。</p>
+            </header>
+            <div class="panel__body">
+              <div class="status-pill">
+                <span class="status-dot" aria-hidden="true"></span>
+                <span id="api-status" class="status-text">状態を確認しています...</span>
+              </div>
+              <button id="refresh-stores" class="btn btn-ghost" type="button">ストアを再読み込み</button>
+            </div>
+            <div class="panel__section">
+              <h3 class="section-title">ファイルサーチストア</h3>
+              <p id="store-error" class="form-error" role="alert"></p>
+              <div id="store-list" class="store-list"></div>
+              <p id="store-empty" class="empty-hint">まだストアがありません。まずはストアを作成してください。</p>
+            </div>
+          </section>
+
+          <section class="panel info-panel">
+            <header class="panel__header">
+              <h2 class="panel__title">ナレッジメモ</h2>
+              <p class="panel__subtitle">チャットで参照したい短いメモやリンクを 2〜3 行で整理します。</p>
+            </header>
+            <div class="panel__body">
+              <div id="document-list" class="document-list"></div>
+            </div>
+            <div class="panel__section">
+              <form id="document-form" class="document-form" autocomplete="off">
+                <label class="field">
+                  <span class="field__label">タイトル</span>
+                  <input type="text" id="doc-title" required maxlength="120" />
+                </label>
+                <label class="field">
+                  <span class="field__label">内容</span>
+                  <textarea
+                    id="doc-content"
+                    rows="4"
+                    required
+                    placeholder="Gemini に共有したいポイントを 2〜3 行で入力してください"
+                  ></textarea>
+                </label>
+                <p class="field-hint">保存すると埋め込みが更新され、次回以降の回答に反映されます。</p>
+                <button class="btn btn-solid" type="submit">メモを保存</button>
+                <p id="document-error" class="form-error" role="alert"></p>
+              </form>
+            </div>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <dialog id="store-dialog" class="modal">
+      <form id="store-form" class="modal__surface" method="dialog" autocomplete="off">
+        <header class="modal__header">
+          <h2>ファイルサーチストアを作成</h2>
+          <button class="btn btn-icon" type="button" data-close-dialog="store-dialog" aria-label="閉じる">×</button>
+        </header>
+        <div class="modal__body">
+          <p class="modal__intro">Gemini File Search で利用する新しいストア名を入力してください。</p>
+          <label class="field">
+            <span class="field__label">ストア名</span>
+            <input type="text" id="store-name" required maxlength="60" placeholder="例: プロジェクトドキュメント" />
+          </label>
+          <p id="store-feedback" class="form-error" role="alert"></p>
+        </div>
+        <footer class="modal__footer">
+          <button class="btn btn-ghost" type="button" data-close-dialog="store-dialog">キャンセル</button>
+          <button id="submit-store" class="btn btn-solid" type="submit">作成</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="upload-dialog" class="modal">
+      <form id="upload-form" class="modal__surface" method="dialog" autocomplete="off">
+        <header class="modal__header">
+          <h2>Gemini にファイルをアップロード</h2>
+          <button class="btn btn-icon" type="button" data-close-dialog="upload-dialog" aria-label="閉じる">×</button>
+        </header>
+        <div class="modal__body">
+          <p class="modal__intro">
+            PDF / TXT / MD などのファイルを選択し、保存するファイルサーチストアを指定してください。
+          </p>
+          <label class="field">
+            <span class="field__label">ファイル</span>
+            <input type="file" id="upload-file" accept=".pdf,.txt,.md,.csv,.doc,.docx,.ppt,.pptx,.json,.yaml,.yml,.xml,.html,.zip" required />
+            <span id="upload-summary" class="field-hint">ファイルを選択すると詳細が表示されます。</span>
+          </label>
+          <label class="field">
+            <span class="field__label">保存先ストア</span>
+            <select id="upload-store" required disabled>
+              <option value="">ストアを選択してください</option>
+            </select>
+            <span class="field-hint">ストアが未作成の場合は、先にストアを作成してください。</span>
+          </label>
+          <label class="field">
+            <span class="field__label">メモ (任意)</span>
+            <textarea id="upload-notes" rows="3" placeholder="ファイルに関するメモがあれば入力してください"></textarea>
+          </label>
+          <p id="upload-feedback" class="form-error" role="alert"></p>
+        </div>
+        <footer class="modal__footer">
+          <button class="btn btn-ghost" type="button" data-close-dialog="upload-dialog">キャンセル</button>
+          <button id="submit-upload" class="btn btn-solid" type="submit" disabled>アップロード</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog
+      id="account-request-dialog"
+      class="modal"
+      data-contact-email="info@example.com"
+    >
+      <div class="modal__surface">
+        <header class="modal__header">
+          <h2>アカウント発行申請</h2>
+          <button class="btn btn-icon" type="button" data-close-dialog="account-request-dialog" aria-label="閉じる">×</button>
+        </header>
+        <div class="modal__body">
+          <p class="modal__intro">
+            初回は管理チームが手動でアカウントを発行します。以下の情報を添えて info 宛にメールをご送付ください。
+          </p>
+          <ul class="modal-list">
+            <li>企業名・事業所名</li>
+            <li>ご担当者さまのお名前と連絡先</li>
+            <li>希望するスタッフの人数</li>
+            <li>利用開始希望日</li>
+          </ul>
+          <p id="account-request-notice" class="modal__notice">
+            メールアプリを開いて申請メールを作成しますか？
+          </p>
+        </div>
+        <footer class="modal__footer">
+          <button id="account-request-cancel" class="btn btn-ghost" type="button">いいえ</button>
+          <button id="account-request-confirm" class="btn btn-solid" type="button">はい</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <template id="message-template">
+      <article class="message">
+        <div class="message-meta"></div>
+        <div class="message-body"></div>
+      </article>
+    </template>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
