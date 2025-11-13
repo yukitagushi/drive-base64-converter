@@ -492,10 +492,10 @@ function buildMediaPromptParts({
 
 function getDefaultModelOrder(mimeType?: string | null): string[] {
   const defaults = ['models/gemini-2.5-flash'];
-  const fallback = 'models/gemini-1.5-pro-latest';
+  const fallback = 'models/gemini-1.5-pro';
   if (mimeType && mimeType.startsWith('video/')) {
     // The 1.5 Pro models generally provide better temporal reasoning for video.
-    return [fallback, defaults[0]];
+    return [fallback, ...defaults];
   }
   return [...defaults, fallback];
 }
