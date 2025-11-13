@@ -19,6 +19,32 @@ import {
 } from '../lib/gemini';
 import { ensureStorageBucket } from '../lib/storage';
 
+/**
+ * /api/documents is responsible for authenticated file uploads used by the RAG workflow.
+ * Expected behaviour:
+ *   - Reject unauthenticated requests with 401.
+ *   - Persist the binary to Supabase (and optionally Gemini File Search) for CSV/PNG/ZIP/XLSX inputs.
+ *   - Attempt Gemini media analysis for images/videos without failing the overall upload when analysis fails.
+ *   - Return structured error information (with debug hints in non-production) for fatal failures only.
+ */
+
+const DOCUMENTS_API_NAME = '/api/documents';
+const isProduction = process.env.NODE_ENV === 'production';
+
+class SupabaseActionError extends Error {
+  table: string;
+  operation: string;
+  supabaseError: any;
+
+  constructor(table: string, operation: string, supabaseError: any) {
+    super(supabaseError?.message || `Supabase ${operation} failed for ${table}`);
+    this.name = 'SupabaseActionError';
+    this.table = table;
+    this.operation = operation;
+    this.supabaseError = supabaseError ?? null;
+  }
+}
+
 const DEFAULT_UPLOAD_BUCKET = 'gemini-upload-cache';
 const MAX_UPLOAD_BYTES = 60 * 1024 * 1024; // 60MB safety cap for server-side processing
 const MAX_ZIP_EXTRACT_FILES = 200;
@@ -197,11 +223,46 @@ function serializeGeminiError(error: unknown): Record<string, any> {
   return { value: error };
 }
 
-function logGeminiError(message: string, error: unknown, context: Record<string, any> = {}) {
-  console.error(message, {
+function serializeSupabaseErrorPayload(error: SupabaseActionError | null): Record<string, any> | null {
+  if (!error) {
+    return null;
+  }
+
+  const raw = error.supabaseError || {};
+  const sanitized = typeof raw === 'object' && raw !== null
+    ? {
+        message: raw.message ?? null,
+        details: raw.details ?? null,
+        hint: raw.hint ?? null,
+        code: raw.code ?? null,
+      }
+    : { message: raw };
+
+  return {
+    table: error.table,
+    operation: error.operation,
+    ...sanitized,
+  };
+}
+
+function logDocumentsError(stage: string, message: string, error: unknown, context: Record<string, any> = {}) {
+  console.error(`${DOCUMENTS_API_NAME} ${stage} error: ${message}`, {
+    api: DOCUMENTS_API_NAME,
+    stage,
     ...context,
-    geminiError: serializeGeminiError(error),
+    error:
+      error instanceof SupabaseActionError
+        ? serializeSupabaseErrorPayload(error)
+        : error instanceof GeminiApiError
+        ? serializeGeminiError(error)
+        : error instanceof Error
+        ? { name: error.name, message: error.message, stack: error.stack }
+        : error,
   });
+}
+
+function logGeminiError(message: string, error: unknown, context: Record<string, any> = {}) {
+  logDocumentsError('gemini', message, error, context);
 }
 
 function isZipType(mimeType: string, extension: string): boolean {
@@ -415,8 +476,15 @@ function applyCors(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Headers', 'Authorization,Content-Type,Accept');
 }
 
-function respond(res: VercelResponse, status: number, payload: Record<string, any>) {
-  res.status(status).json({ source: 'api', status, ...payload });
+function withDebug(payload: Record<string, any>, debug: Record<string, any> | null): Record<string, any> {
+  if (!isProduction && debug && Object.keys(debug).length > 0) {
+    return { ...payload, debug };
+  }
+  return payload;
+}
+
+function respond(res: VercelResponse, status: number, payload: Record<string, any>, debug: Record<string, any> | null = null) {
+  res.status(status).json(withDebug({ source: 'api', status, ...payload }, debug));
 }
 
 function firstValue(value: string | string[] | undefined): string | undefined {
@@ -476,11 +544,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Allow', 'GET,POST,OPTIONS');
     respond(res, 405, { error: 'Method Not Allowed' });
   } catch (error: any) {
-    logGeminiError('Error in /api/documents:', error);
+    logDocumentsError('handler', 'Unhandled error in root documents handler', error);
     if (handleKnownError(res, error)) {
       return;
     }
-    respond(res, 500, { error: error?.message || 'Internal Server Error' });
+    respond(
+      res,
+      500,
+      { error: error?.message || 'Internal Server Error' },
+      { stage: 'root_handler' }
+    );
   }
 }
 
@@ -574,12 +647,18 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
       location: env.location,
     });
   } catch (error: any) {
-    logGeminiError('Gemini environment validation failed.', error);
-    respond(res, 500, {
-      error:
-        error?.message ||
-        'Gemini の環境変数 (GEMINI_API_KEY, GEMINI_PROJECT_ID, GEMINI_LOCATION) を確認してください。',
-    });
+    logDocumentsError('configuration', 'Gemini environment validation failed', error);
+    respond(
+      res,
+      500,
+      {
+        error:
+          error?.message ||
+          'Gemini の環境変数 (GEMINI_API_KEY, GEMINI_PROJECT_ID, GEMINI_LOCATION) を確認してください。',
+        geminiError: serializeGeminiError(error),
+      },
+      { stage: 'gemini_env' }
+    );
     return;
   }
 
@@ -676,16 +755,54 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
 
     res.status(201).json(outcome);
   } catch (error: any) {
+    // upload_failed is reserved for cases where we could not persist metadata or
+    // validate the upload. Gemini analysis and File Search 5xx are handled earlier
+    // and should return 201 with warning notes instead of entering this block.
     if (normalizedMimeForCatch) {
       catchContext.mimeType = normalizedMimeForCatch;
     }
-    logGeminiError('handlePost failed', error, catchContext);
-    const serializedError = serializeGeminiError(error);
+    const supabaseErrorPayload = error instanceof SupabaseActionError ? serializeSupabaseErrorPayload(error) : null;
+    const geminiErrorPayload = serializeGeminiError(error);
+    logDocumentsError('handler', 'handlePost failed', error, {
+      ...catchContext,
+      supabaseError: supabaseErrorPayload,
+      geminiError: geminiErrorPayload,
+    });
+
     if (error instanceof GeminiApiError && error.status === 404) {
-      respond(res, 400, { error: 'file_store_not_found', geminiError: serializedError });
+      respond(res, 400, { error: 'file_store_not_found', geminiError: geminiErrorPayload }, {
+        stage: 'gemini_upload',
+        ...catchContext,
+      });
       return;
     }
-    respond(res, 500, { error: 'upload_failed', geminiError: serializedError });
+
+    if (error instanceof SupabaseActionError) {
+      respond(
+        res,
+        500,
+        {
+          error: 'upload_failed',
+          supabaseError: supabaseErrorPayload,
+          geminiError: geminiErrorPayload,
+        },
+        {
+          stage: `${error.table}.${error.operation}`,
+          ...catchContext,
+        }
+      );
+      return;
+    }
+
+    respond(
+      res,
+      500,
+      { error: 'upload_failed', geminiError: geminiErrorPayload },
+      {
+        stage: 'unknown_failure',
+        ...catchContext,
+      }
+    );
   }
 }
 
@@ -785,11 +902,23 @@ async function handleJsonUpload(
   try {
     fileBuffer = await bufferFromUnknown(downloadData);
   } catch (error: any) {
-    respond(res, 500, {
-      error:
-        error?.message ||
-        'Supabase ストレージから取得したファイルを処理できませんでした。',
+    logDocumentsError('supabase', 'Failed to normalize downloaded storage object', error, {
+      bucket,
+      path,
     });
+    respond(
+      res,
+      500,
+      {
+        error:
+          error?.message || 'Supabase ストレージから取得したファイルを処理できませんでした。',
+      },
+      {
+        stage: 'storage_download',
+        bucket,
+        path,
+      }
+    );
     return null;
   }
 
@@ -1093,8 +1222,12 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
     .single();
 
   if (adminInsertError) {
-    console.error('Supabase file insert error:', adminInsertError.message);
-    throw new Error(adminInsertError.message);
+    const wrapped = new SupabaseActionError('file_store_files', 'insert', adminInsertError);
+    logDocumentsError('supabase', 'Failed to insert uploaded file metadata', wrapped, {
+      fileStoreId: params.storeRow.id,
+      displayName: params.displayName,
+    });
+    throw wrapped;
   }
 
   const { data: readerRow, error: readerError } = await params.supabase
@@ -1106,7 +1239,9 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
     .maybeSingle();
 
   if (readerError) {
-    console.warn('Failed to read back inserted row with user client:', readerError.message);
+    logDocumentsError('supabase', 'Failed to read inserted file metadata with user token', readerError, {
+      fileId: adminInserted.id,
+    });
   }
 
   const record = normalizeFileRecord(readerRow || adminInserted);
@@ -1371,28 +1506,66 @@ async function resolveStoreForUpload(params: ResolveStoreParams): Promise<Resolv
   }
 
   if (storeError) {
-    console.error('Supabase file store lookup error:', storeError);
-    respond(res, 500, { error: 'ファイルストアの取得に失敗しました。' });
+    const wrapped = new SupabaseActionError('file_stores', 'select', storeError);
+    logDocumentsError('supabase', 'Failed to resolve file store for upload', wrapped, {
+      fileStoreId,
+      fileStoreName,
+      staffId: staff?.id || null,
+    });
+    respond(
+      res,
+      500,
+      { error: 'ファイルストアの取得に失敗しました。', supabaseError: serializeSupabaseErrorPayload(wrapped) },
+      {
+        stage: 'resolve_store',
+        fileStoreId,
+        fileStoreName,
+      }
+    );
     return null;
   }
 
   if (!storeRow) {
     const access = await classifyStoreAccess(admin, fileStoreId, staff.officeId || null);
     if (access === 'forbidden') {
-      respond(res, 403, { error: 'このストアにはアクセスできません。' });
+      logDocumentsError('authorization', 'Store access forbidden for upload', null, {
+        fileStoreId,
+        staffId: staff?.id || null,
+      });
+      respond(
+        res,
+        403,
+        { error: 'このストアにはアクセスできません。' },
+        { stage: 'resolve_store_forbidden', fileStoreId }
+      );
       return null;
     }
-    respond(res, 404, { error: '指定したストアが見つかりません。' });
+    respond(
+      res,
+      404,
+      { error: '指定したストアが見つかりません。' },
+      { stage: 'resolve_store_missing', fileStoreId, fileStoreName }
+    );
     return null;
   }
 
   if (fileStoreName && storeRow.gemini_store_name !== fileStoreName) {
-    respond(res, 400, { error: '送信された fileStoreName が一致しません。' });
+    respond(
+      res,
+      400,
+      { error: '送信された fileStoreName が一致しません。' },
+      { stage: 'resolve_store_conflict', fileStoreId, fileStoreName, actual: storeRow.gemini_store_name }
+    );
     return null;
   }
 
   if (storeRow.office_id !== staff.officeId) {
-    respond(res, 403, { error: 'このストアにはアクセスできません。' });
+    respond(
+      res,
+      403,
+      { error: 'このストアにはアクセスできません。' },
+      { stage: 'resolve_store_office_mismatch', fileStoreId, officeId: staff.officeId }
+    );
     return null;
   }
 

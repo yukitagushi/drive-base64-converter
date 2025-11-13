@@ -12,6 +12,18 @@ import {
   type GeminiChatMessage,
 } from '../lib/gemini';
 
+/**
+ * /api/chat delivers the authenticated conversational experience backed by Supabase state
+ * and Gemini File Search. The handler must:
+ *   - Validate the caller's Supabase identity and resolve the associated staff/office context.
+ *   - Persist every user and assistant turn to chat_threads/chat_messages.
+ *   - Invoke Gemini with File Search context and return the aggregated transcript.
+ *   - Surface Supabase/Gemini failures as structured JSON instead of crashing the function.
+ */
+
+const CHAT_API_NAME = '/api/chat';
+const isProduction = process.env.NODE_ENV === 'production';
+
 class SupabaseQueryError extends Error {
   table: string;
   operation: string;
@@ -88,8 +100,14 @@ function applyCors(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Headers', 'Authorization,Content-Type,Accept');
 }
 
-function respond(res: VercelResponse, status: number, payload: Record<string, any>) {
-  res.status(status).json({ source: 'api', status, ...payload });
+function respond(
+  res: VercelResponse,
+  status: number,
+  payload: Record<string, any>,
+  debug: Record<string, any> | null = null
+) {
+  const body = { source: 'api', status, ...payload };
+  res.status(status).json(withDebug(body, debug));
 }
 
 function compactGeminiBody(body: any): any {
@@ -154,6 +172,29 @@ function serializeSupabaseErrorPayload(error: SupabaseQueryError | null): Record
   };
 }
 
+function logChatError(stage: string, message: string, error: unknown, context: Record<string, any> = {}) {
+  console.error(`${CHAT_API_NAME} ${stage} error: ${message}`, {
+    api: CHAT_API_NAME,
+    stage,
+    ...context,
+    error:
+      error instanceof SupabaseQueryError
+        ? serializeSupabaseErrorPayload(error)
+        : error instanceof GeminiApiError
+        ? serializeGeminiError(error)
+        : error instanceof Error
+        ? { name: error.name, message: error.message, stack: error.stack }
+        : error,
+  });
+}
+
+function withDebug(payload: Record<string, any>, debug: Record<string, any> | null): Record<string, any> {
+  if (!isProduction && debug && Object.keys(debug).length > 0) {
+    return { ...payload, debug };
+  }
+  return payload;
+}
+
 function generateThreadTitle(text: string): string {
   if (!text) {
     return '新しい会話';
@@ -195,10 +236,10 @@ async function ensureThread(
       .maybeSingle();
 
     if (error) {
-      console.error('supabase error', {
+      logChatError('supabase', 'Failed to load requested chat thread', new SupabaseQueryError('chat_threads', 'select', error), {
         table: 'chat_threads',
         operation: 'select',
-        error,
+        threadId: requestedThreadId,
       });
       throw new SupabaseQueryError('chat_threads', 'select', error);
     }
@@ -219,12 +260,12 @@ async function ensureThread(
     .single();
 
   if (error || !data) {
-    console.error('supabase error', {
-      table: 'chat_threads',
-      operation: 'insert',
-      error,
+    const wrapped = new SupabaseQueryError('chat_threads', 'insert', error);
+    logChatError('supabase', 'Failed to insert new chat thread', wrapped, {
+      officeId: staff.officeId,
+      staffId: staff.id,
     });
-    throw new SupabaseQueryError('chat_threads', 'insert', error);
+    throw wrapped;
   }
 
   return mapThreadRow(data as ThreadRow);
@@ -253,12 +294,12 @@ async function resolveFileSearchStore(
       .maybeSingle();
 
     if (error && error.code !== 'PGRST116') {
-      console.error('supabase error', {
-        table: 'file_stores',
-        operation: 'select',
-        error,
+      const wrapped = new SupabaseQueryError('file_stores', 'select', error);
+      logChatError('supabase', 'Failed to resolve file store for chat', wrapped, {
+        column,
+        value,
       });
-      throw new SupabaseQueryError('file_stores', 'select', error);
+      throw wrapped;
     }
 
     if (!data) {
@@ -299,12 +340,12 @@ async function insertMessage(params: InsertMessageParams): Promise<MessageRow> {
     .single();
 
   if (error || !data) {
-    console.error('supabase error', {
-      table: 'chat_messages',
-      operation: 'insert',
-      error,
+    const wrapped = new SupabaseQueryError('chat_messages', 'insert', error);
+    logChatError('supabase', 'Failed to insert chat message', wrapped, {
+      threadId: params.threadId,
+      role: params.role,
     });
-    throw new SupabaseQueryError('chat_messages', 'insert', error);
+    throw wrapped;
   }
 
   return data as MessageRow;
@@ -318,12 +359,11 @@ async function loadThreadMessages(admin: ReturnType<typeof getSupabaseAdmin>, th
     .order('created_at', { ascending: true });
 
   if (error) {
-    console.error('supabase error', {
-      table: 'chat_messages',
-      operation: 'select',
-      error,
+    const wrapped = new SupabaseQueryError('chat_messages', 'select', error);
+    logChatError('supabase', 'Failed to load chat history', wrapped, {
+      threadId,
     });
-    throw new SupabaseQueryError('chat_messages', 'select', error);
+    throw wrapped;
   }
 
   return (data || []) as MessageRow[];
@@ -358,12 +398,11 @@ async function touchThread(admin: ReturnType<typeof getSupabaseAdmin>, threadId:
     .eq('id', threadId);
 
   if (error) {
-    console.error('supabase error', {
-      table: 'chat_threads',
-      operation: 'update',
-      error,
+    const wrapped = new SupabaseQueryError('chat_threads', 'update', error);
+    logChatError('supabase', 'Failed to update chat thread timestamp', wrapped, {
+      threadId,
     });
-    throw new SupabaseQueryError('chat_threads', 'update', error);
+    throw wrapped;
   }
 }
 
@@ -390,32 +429,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  const catchContext: Record<string, any> = {};
   try {
-    const catchContext: Record<string, any> = {};
     let body: any = {};
     try {
       body = parseBody(req);
     } catch (error: any) {
-      respond(res, 400, { error: '無効な JSON です。' });
+      respond(res, 400, { error: '無効な JSON です。' }, { stage: 'parse_body' });
       return;
     }
 
     const message = typeof body.message === 'string' ? body.message.trim() : '';
     if (!message) {
-      respond(res, 400, { error: 'message は必須です。' });
+      respond(res, 400, { error: 'message は必須です。' }, { stage: 'validate_message' });
       return;
     }
 
     const requestedThreadId = typeof body.threadId === 'string' ? body.threadId.trim() || null : null;
 
     if (!isSupabaseConfigured()) {
-      respond(res, 503, { error: 'Supabase が設定されていません。' });
+      respond(res, 503, { error: 'Supabase が設定されていません。' }, { stage: 'supabase_config' });
       return;
     }
 
     const token = getSupabaseBearerToken(req);
     if (!token) {
-      respond(res, 401, { error: 'チャットを利用するにはログインしてください。' });
+      respond(res, 401, { error: 'チャットを利用するにはログインしてください。' }, { stage: 'auth_missing' });
       return;
     }
 
@@ -423,7 +462,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const staff = await resolveStaffForRequest(admin, req);
 
     if (!staff || !staff.id) {
-      respond(res, 403, { error: 'スタッフ情報が確認できません。' });
+      respond(res, 403, { error: 'スタッフ情報が確認できません。' }, { stage: 'staff_missing' });
       return;
     }
 
@@ -432,26 +471,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     catchContext.organizationId = staff.organizationId;
 
     if (!staff.officeId) {
-      respond(res, 403, { error: '所属する事業所が設定されていません。' });
+      respond(res, 403, { error: '所属する事業所が設定されていません。' }, { stage: 'office_missing', ...catchContext });
       return;
     }
 
     try {
       ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
     } catch (envError: any) {
-      respond(res, 500, {
-        error:
-          envError?.message || 'Gemini の環境変数 (GEMINI_API_KEY または GOOGLE_API_KEY) を確認してください。',
-      });
+      logChatError('configuration', 'Gemini environment validation failed', envError, catchContext);
+      respond(
+        res,
+        500,
+        {
+          error:
+            envError?.message || 'Gemini の環境変数 (GEMINI_API_KEY または GOOGLE_API_KEY) を確認してください。',
+          geminiError: serializeGeminiError(envError),
+        },
+        { stage: 'gemini_env', ...catchContext }
+      );
       return;
     }
 
     const store = await resolveFileSearchStore(admin, staff as StaffContext);
     if (!store) {
-      respond(res, 400, {
-        error: 'missing_context',
-        detail: '所属する事業所または組織に紐づく Gemini File Search ストアが見つかりません。',
-      });
+      logChatError('context', 'No file store available for chat', null, catchContext);
+      respond(
+        res,
+        400,
+        {
+          error: 'missing_context',
+          detail: '所属する事業所または組織に紐づく Gemini File Search ストアが見つかりません。',
+        },
+        { stage: 'resolve_store', ...catchContext }
+      );
       return;
     }
     catchContext.geminiStoreName = store.gemini_store_name;
@@ -459,7 +511,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const thread = await ensureThread(admin, staff as StaffContext, requestedThreadId, generateThreadTitle(message));
     if (!thread) {
-      respond(res, 403, { error: 'チャットスレッドを作成できませんでした。' });
+      respond(res, 403, { error: 'チャットスレッドを作成できませんでした。' }, { stage: 'ensure_thread', ...catchContext });
       return;
     }
     catchContext.threadId = thread.id;
@@ -480,11 +532,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       '参照情報が不十分な場合はその旨を正直に伝えてください。',
     ].join('\n');
 
-    const chatResult = await generateChatResponse({
-      messages: geminiMessages,
-      systemInstruction,
-      fileSearch: { storeName: store.gemini_store_name },
-    });
+    let chatResult;
+    try {
+      chatResult = await generateChatResponse({
+        messages: geminiMessages,
+        systemInstruction,
+        fileSearch: { storeName: store.gemini_store_name },
+      });
+    } catch (geminiError: any) {
+      const serializedGeminiError = serializeGeminiError(geminiError);
+      logChatError('gemini', 'Gemini chat generation failed', geminiError, {
+        ...catchContext,
+        geminiError: serializedGeminiError,
+      });
+      respond(
+        res,
+        500,
+        {
+          error: 'chat_failed',
+          supabaseError: null,
+          geminiError: serializedGeminiError,
+        },
+        { stage: 'gemini_chat', ...catchContext }
+      );
+      return;
+    }
     const assistantContent = chatResult.text?.trim() || DEFAULT_ASSISTANT_FALLBACK;
 
     const assistantMetadata = chatResult.usage
@@ -510,15 +582,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       usage: chatResult.usage || null,
     });
   } catch (error: any) {
-    console.error('api/chat failed', error);
+    logChatError('handler', 'api/chat failed', error, catchContext);
     if (!res.headersSent) {
       const supabaseErrorPayload = error instanceof SupabaseQueryError ? serializeSupabaseErrorPayload(error) : null;
-      res.status(500).json({
-        source: 'api',
-        error: 'chat_failed',
-        supabaseError: supabaseErrorPayload,
-        geminiError: serializeGeminiError(error),
-      });
+      respond(
+        res,
+        500,
+        {
+          error: 'chat_failed',
+          supabaseError: supabaseErrorPayload,
+          geminiError: serializeGeminiError(error),
+        },
+        { stage: 'handler_catch', ...catchContext }
+      );
     }
   }
 }
