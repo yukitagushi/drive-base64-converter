@@ -951,11 +951,13 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       try {
         analysis = await analyzeFileWithGemini({
           geminiFileName: original.gemini.geminiFileName,
+          geminiFileUri: original.gemini.geminiFileUri,
           mimeType: normalizedMime,
         });
       } catch (error: any) {
         logGeminiError('Gemini stored media analysis failed for image.', error, {
           geminiFileName: original.gemini.geminiFileName,
+          geminiFileUri: original.gemini.geminiFileUri,
           mimeType: normalizedMime,
         });
         throw error;
@@ -990,11 +992,13 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
     try {
       analysis = await analyzeFileWithGemini({
         geminiFileName: original.gemini.geminiFileName,
+        geminiFileUri: original.gemini.geminiFileUri,
         mimeType: normalizedMime,
       });
     } catch (error: any) {
       logGeminiError('Gemini stored media analysis failed for video.', error, {
         geminiFileName: original.gemini.geminiFileName,
+        geminiFileUri: original.gemini.geminiFileUri,
         mimeType: normalizedMime,
       });
       throw error;

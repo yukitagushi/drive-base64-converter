@@ -36,6 +36,7 @@ interface GeminiFileResponse {
   sizeBytes?: number | string;
   createTime?: string;
   updateTime?: string;
+  uri?: string;
 }
 
 export interface GeminiStoreResult {
@@ -47,6 +48,7 @@ export interface GeminiStoreResult {
 
 export interface GeminiFileUploadResult {
   geminiFileName: string;
+  geminiFileUri: string | null;
   displayName: string;
   mimeType: string | null;
   sizeBytes: number;
@@ -145,6 +147,7 @@ function normalizeStore(entry: GeminiStoreResponse): GeminiStoreResult {
 function normalizeFile(entry: GeminiFileResponse): GeminiFileUploadResult {
   return {
     geminiFileName: entry.name || '',
+    geminiFileUri: (entry as any)?.uri || null,
     displayName: entry.displayName || deriveDisplayName(entry.name),
     mimeType: entry.mimeType || null,
     sizeBytes: typeof entry.sizeBytes === 'string' ? Number(entry.sizeBytes) : Number(entry.sizeBytes || 0),
@@ -416,6 +419,7 @@ export async function uploadFileToStore(options: {
 
   console.info('Gemini file uploaded:', {
     name: result.geminiFileName,
+    uri: result.geminiFileUri,
     displayName: result.displayName,
     sizeBytes: result.sizeBytes,
     store: storeResource,
@@ -457,7 +461,7 @@ function toBuffer(data: Buffer | ArrayBuffer | ArrayBufferView | ArrayLike<numbe
 type GeminiMediaSource =
   | {
       kind: 'file';
-      fileName: string;
+      fileUri: string;
       mimeType?: string;
     }
   | {
@@ -475,7 +479,7 @@ function buildMediaPromptParts({
 }) {
   const parts: any[] = [];
   if (media.kind === 'file') {
-    const fileData: Record<string, string> = { fileUri: media.fileName };
+    const fileData: Record<string, string> = { fileUri: media.fileUri };
     if (media.mimeType && media.mimeType.trim()) {
       fileData.mimeType = media.mimeType.trim();
     }
@@ -587,6 +591,7 @@ async function invokeMediaAnalysis({
 
 export async function analyzeFileWithGemini(options: {
   geminiFileName: string;
+  geminiFileUri?: string | null;
   prompt?: string;
   mimeType?: string;
   model?: string;
@@ -596,6 +601,8 @@ export async function analyzeFileWithGemini(options: {
   if (!fileName) {
     throw new Error('Gemini に渡すファイル名が指定されていません。');
   }
+
+  const fileUri = String(options.geminiFileUri || '').trim() || fileName;
 
   const prompt =
     options.prompt?.trim() ||
@@ -617,7 +624,7 @@ export async function analyzeFileWithGemini(options: {
         model: candidate,
         media: {
           kind: 'file',
-          fileName,
+          fileUri,
           mimeType: options.mimeType,
         },
         prompt,
