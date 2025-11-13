@@ -1076,7 +1076,7 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
 
   const insertPayload = {
     file_store_id: params.storeRow.id,
-    gemini_file_name: uploadResult.geminiFileName,
+    gemini_file_name: uploadResult.geminiFileName || null,
     display_name: uploadResult.displayName || params.displayName,
     description: description,
     size_bytes: uploadResult.sizeBytes || params.buffer.length,

@@ -369,9 +369,9 @@ export async function uploadFileToStore(options: {
   );
 
   const apiKey = ensureApiKey();
-  const uploadUrl = `${GEMINI_UPLOAD_BASE}/${encodePath(uploadResourcePath)}:uploadToFileSearchStore?uploadType=multipart&key=${encodeURIComponent(
-    apiKey
-  )}`;
+  const uploadUrl = `${GEMINI_UPLOAD_BASE}/${encodePath(
+    uploadResourcePath
+  )}:uploadToFileSearchStore?uploadType=multipart&key=${encodeURIComponent(apiKey)}`;
   const uploadResponse = await fetch(uploadUrl, {
     method: 'POST',
     headers: {
