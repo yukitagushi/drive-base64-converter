@@ -2,6 +2,12 @@ const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com';
 const GEMINI_API_BASE = `${GEMINI_API_ROOT}/v1beta`;
 const GEMINI_UPLOAD_BASE = `${GEMINI_API_ROOT}/upload/v1beta`;
 
+export interface GeminiEnvironmentConfig {
+  apiKey: string;
+  projectId: string | null;
+  location: string | null;
+}
+
 export class GeminiApiError extends Error {
   status?: number;
   debugId?: string | null;
@@ -30,6 +36,7 @@ interface GeminiFileResponse {
   sizeBytes?: number | string;
   createTime?: string;
   updateTime?: string;
+  uri?: string;
 }
 
 export interface GeminiStoreResult {
@@ -41,11 +48,14 @@ export interface GeminiStoreResult {
 
 export interface GeminiFileUploadResult {
   geminiFileName: string;
+  geminiFileUri: string | null;
   displayName: string;
   mimeType: string | null;
   sizeBytes: number;
   createTime: string | null;
   updateTime: string | null;
+  /** Indicates whether the file was registered in Gemini File Search. */
+  registered: boolean;
 }
 
 export interface GeminiMediaAnalysisCandidate {
@@ -62,6 +72,48 @@ export interface GeminiMediaAnalysisResult {
   raw?: any;
 }
 
+export interface GeminiChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
+export interface GeminiChatCandidate {
+  text: string;
+  finishReason: string | null;
+  index: number | null;
+}
+
+export interface GeminiChatResult {
+  text: string;
+  candidates: GeminiChatCandidate[];
+  usage?: Record<string, any> | null;
+  raw?: any;
+}
+
+export interface GeminiChatFileSearchOptions {
+  storeName: string;
+  maxChunks?: number;
+  dynamicThreshold?: number;
+}
+
+function readProjectId(): string | null {
+  return (
+    process.env.GEMINI_PROJECT_ID ||
+    process.env.GOOGLE_PROJECT_ID ||
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    null
+  );
+}
+
+function readLocation(): string | null {
+  return (
+    process.env.GEMINI_LOCATION ||
+    process.env.GOOGLE_CLOUD_LOCATION ||
+    process.env.GOOGLE_CLOUD_REGION ||
+    null
+  );
+}
+
 function getApiKey(): string {
   return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 }
@@ -72,6 +124,41 @@ function ensureApiKey(): string {
     throw new Error('Gemini File Search を利用するには GEMINI_API_KEY (または GOOGLE_API_KEY) が必要です。');
   }
   return apiKey;
+}
+
+export function readGeminiEnvironment(): GeminiEnvironmentConfig {
+  return {
+    apiKey: getApiKey(),
+    projectId: readProjectId(),
+    location: readLocation(),
+  };
+}
+
+export function ensureGeminiEnvironment(options: {
+  requireApiKey?: boolean;
+  requireProject?: boolean;
+  requireLocation?: boolean;
+} = {}): GeminiEnvironmentConfig {
+  const { requireApiKey = true, requireProject = true, requireLocation = true } = options;
+  const env = readGeminiEnvironment();
+
+  if (requireApiKey && !env.apiKey) {
+    throw new Error('Gemini API キーが設定されていません。GEMINI_API_KEY または GOOGLE_API_KEY を確認してください。');
+  }
+
+  if (requireProject && !env.projectId) {
+    throw new Error(
+      'Gemini プロジェクト ID が設定されていません。GEMINI_PROJECT_ID (または GOOGLE_PROJECT_ID / GOOGLE_CLOUD_PROJECT) を確認してください。'
+    );
+  }
+
+  if (requireLocation && !env.location) {
+    throw new Error(
+      'Gemini のロケーションが設定されていません。GEMINI_LOCATION (または GOOGLE_CLOUD_LOCATION / GOOGLE_CLOUD_REGION) を確認してください。'
+    );
+  }
+
+  return env;
 }
 
 function normalizeStore(entry: GeminiStoreResponse): GeminiStoreResult {
@@ -86,11 +173,13 @@ function normalizeStore(entry: GeminiStoreResponse): GeminiStoreResult {
 function normalizeFile(entry: GeminiFileResponse): GeminiFileUploadResult {
   return {
     geminiFileName: entry.name || '',
+    geminiFileUri: (entry as any)?.uri || null,
     displayName: entry.displayName || deriveDisplayName(entry.name),
     mimeType: entry.mimeType || null,
     sizeBytes: typeof entry.sizeBytes === 'string' ? Number(entry.sizeBytes) : Number(entry.sizeBytes || 0),
     createTime: entry.createTime || null,
     updateTime: entry.updateTime || null,
+    registered: true,
   };
 }
 
@@ -151,6 +240,19 @@ function ensureStoreResourceName(nameOrId: string, displayName?: string): string
     return trimmed;
   }
 
+  if (trimmed.startsWith('stores/')) {
+    const slug = trimmed.slice('stores/'.length);
+    const sanitized = slugify(slug) || slug;
+    return `fileSearchStores/${sanitized}`;
+  }
+
+  if (trimmed.startsWith('projects/')) {
+    const match = trimmed.match(/fileSearchStores\/(.+)$/);
+    if (match?.[1]) {
+      return `fileSearchStores/${match[1]}`;
+    }
+  }
+
   const slug = sanitizeStoreId(trimmed, displayName || undefined);
   return `fileSearchStores/${slug}`;
 }
@@ -203,14 +305,14 @@ function parsePayload(raw: string): any {
   }
 }
 
-export async function createFileStore(
-  displayName: string
-): Promise<GeminiStoreResult> {
+export async function createFileStore(displayName: string): Promise<GeminiStoreResult> {
   const label = typeof displayName === 'string' ? displayName.trim() : '';
   const body: Record<string, string> = {};
   if (label) {
     body.displayName = label;
   }
+
+  ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
 
   const url = `${GEMINI_API_BASE}/fileSearchStores`;
   const response = await geminiFetch(url, {
@@ -274,14 +376,16 @@ export async function uploadFileToStore(options: {
   }
 
   const storeResource = ensureStoreResourceName(options.storeName, options.displayName);
+  const normalizedStoreResource = storeResource.replace(/\/+$/, '');
+  const uploadResourcePath = normalizedStoreResource;
 
   const metadata: Record<string, string> = {};
   if (options.displayName) {
     metadata.displayName = options.displayName;
   }
-  if (options.description) {
-    metadata.description = options.description;
-  }
+  // NOTE: Gemini's upload metadata currently rejects unknown fields such as
+  // "description", so we persist descriptions only in Supabase instead of the
+  // API payload to avoid 400 Invalid JSON errors.
 
   const fileBytes = Buffer.isBuffer(options.fileBuffer)
     ? new Uint8Array(options.fileBuffer)
@@ -298,9 +402,9 @@ export async function uploadFileToStore(options: {
   );
 
   const apiKey = ensureApiKey();
-  const uploadUrl = `${GEMINI_UPLOAD_BASE}/${encodePath(storeResource)}:uploadToFileSearchStore?uploadType=multipart&key=${encodeURIComponent(
-    apiKey
-  )}`;
+  const uploadUrl = `${GEMINI_UPLOAD_BASE}/${encodePath(
+    uploadResourcePath
+  )}:uploadToFileSearchStore?uploadType=multipart&key=${encodeURIComponent(apiKey)}`;
   const uploadResponse = await fetch(uploadUrl, {
     method: 'POST',
     headers: {
@@ -319,11 +423,40 @@ export async function uploadFileToStore(options: {
       status: uploadResponse.status,
       body: typeof uploadText === 'string' ? uploadText.slice(0, 512) : uploadText,
       debugId,
+      storeResource: normalizedStoreResource,
+      uploadUrl,
     });
-    throw new GeminiApiError(message, {
+
+    if (uploadResponse.status >= 500) {
+      console.error('Gemini file upload encountered a server-side error. Continuing without File Search registration.', {
+        status: uploadResponse.status,
+        storeResource: normalizedStoreResource,
+        uploadUrl,
+      });
+      return {
+        geminiFileName: '',
+        geminiFileUri: null,
+        displayName: options.displayName || 'document',
+        mimeType: options.mimeType || null,
+        sizeBytes: options.fileBuffer.length,
+        createTime: null,
+        updateTime: null,
+        registered: false,
+      };
+    }
+
+    const enrichedMessage =
+      uploadResponse.status === 404
+        ? `Gemini File Search ストア (${normalizedStoreResource}) が見つかりません。`
+        : message;
+    throw new GeminiApiError(enrichedMessage, {
       status: uploadResponse.status,
       debugId,
-      body: uploadPayload,
+      body: {
+        payload: uploadPayload,
+        storeResource: normalizedStoreResource,
+        uploadUrl,
+      },
     });
   }
 
@@ -339,41 +472,341 @@ export async function uploadFileToStore(options: {
 
   console.info('Gemini file uploaded:', {
     name: result.geminiFileName,
+    uri: result.geminiFileUri,
     displayName: result.displayName,
     sizeBytes: result.sizeBytes,
-    store: storeResource,
+    store: normalizedStoreResource,
+    uploadUrl,
   });
 
   return result;
 }
 
-export async function analyzeFileWithGemini(options: {
-  geminiFileName: string;
-  prompt?: string;
-  mimeType?: string;
-  model?: string;
-}): Promise<GeminiMediaAnalysisResult> {
-  const fileName = String(options.geminiFileName || '').trim();
-  if (!fileName) {
-    throw new Error('Gemini に渡すファイル名が指定されていません。');
+function normalizeModelId(value?: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.startsWith('models/') ? trimmed : `models/${trimmed}`;
+}
+
+function buildChatRequestContents(messages: GeminiChatMessage[]) {
+  const contents: any[] = [];
+  const systemParts: Array<{ text: string }> = [];
+
+  for (const entry of messages || []) {
+    if (!entry || typeof entry.content !== 'string') {
+      continue;
+    }
+    const trimmed = entry.content.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    if (entry.role === 'system') {
+      systemParts.push({ text: trimmed });
+      continue;
+    }
+
+    const role = entry.role === 'assistant' ? 'model' : 'user';
+    contents.push({
+      role,
+      parts: [{ text: trimmed }],
+    });
   }
 
-  const prompt = options.prompt?.trim() || 'このメディアの内容を要約し、重要なポイントと推奨アクションを日本語で提示してください。';
-  const model = options.model || 'models/gemini-1.5-pro-latest';
+  return { contents, systemParts };
+}
 
+function getDefaultChatModelOrder(): string[] {
+  return ['models/gemini-2.0-flash', 'models/gemini-2.0-pro'];
+}
+
+export async function generateChatResponse(options: {
+  messages: GeminiChatMessage[];
+  model?: string;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  maxOutputTokens?: number;
+  systemInstruction?: string;
+  fileSearch?: GeminiChatFileSearchOptions | null;
+}): Promise<GeminiChatResult> {
+  if (!options || !Array.isArray(options.messages) || options.messages.length === 0) {
+    throw new Error('Gemini チャットにはメッセージが必要です。');
+  }
+
+  ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
+
+  const messageList = Array.isArray(options.messages) ? options.messages : [];
+  const { contents, systemParts } = buildChatRequestContents(messageList);
+  if (!contents.length) {
+    throw new Error('Gemini チャットにはユーザーまたはアシスタントのメッセージが必要です。');
+  }
+
+  const body: Record<string, any> = {
+    contents,
+  };
+
+  if (systemParts.length || options.systemInstruction) {
+    const parts = [...systemParts];
+    if (options.systemInstruction) {
+      const trimmed = options.systemInstruction.trim();
+      if (trimmed) {
+        parts.unshift({ text: trimmed });
+      }
+    }
+    body.systemInstruction = {
+      role: 'system',
+      parts,
+    };
+  }
+
+  const generationConfig: Record<string, number> = {};
+  if (typeof options.temperature === 'number') {
+    generationConfig.temperature = options.temperature;
+  }
+  if (typeof options.topP === 'number') {
+    generationConfig.topP = options.topP;
+  }
+  if (typeof options.topK === 'number') {
+    generationConfig.topK = options.topK;
+  }
+  if (typeof options.maxOutputTokens === 'number') {
+    generationConfig.maxOutputTokens = options.maxOutputTokens;
+  }
+  if (Object.keys(generationConfig).length > 0) {
+    body.generationConfig = generationConfig;
+  }
+
+  let storeResource: string | null = null;
+  const tools: any[] = [];
+  let toolConfig: Record<string, any> | undefined;
+  const requestedStoreName = typeof options.fileSearch?.storeName === 'string'
+    ? options.fileSearch.storeName.trim()
+    : '';
+
+  if (requestedStoreName) {
+    storeResource = ensureStoreResourceName(requestedStoreName);
+    tools.push({
+      file_search: {
+        file_search_store_names: [storeResource],
+      },
+    });
+
+    const fileSearchConfig: Record<string, any> = {};
+    if (typeof options.fileSearch?.maxChunks === 'number') {
+      fileSearchConfig.max_chunks = options.fileSearch.maxChunks;
+    }
+    if (typeof options.fileSearch?.dynamicThreshold === 'number') {
+      fileSearchConfig.dynamic_retrieval_config = {
+        mode: 'MODE_DYNAMIC',
+        dynamic_threshold: options.fileSearch.dynamicThreshold,
+      };
+    }
+    if (Object.keys(fileSearchConfig).length > 0) {
+      toolConfig = { file_search: fileSearchConfig };
+    }
+  }
+
+  if (tools.length > 0) {
+    body.tools = tools;
+  }
+  if (toolConfig) {
+    body.tool_config = toolConfig;
+  }
+
+  const preferredModel = normalizeModelId(options.model);
+  const defaultModels = getDefaultChatModelOrder();
+  const orderedModels = (preferredModel
+    ? [preferredModel, ...defaultModels]
+    : [...defaultModels]
+  ).filter((model, index, arr) => model && arr.indexOf(model) === index) as string[];
+
+  if (!orderedModels.length) {
+    throw new Error('利用可能な Gemini チャットモデルが選択されていません。');
+  }
+
+  const bodyJson = JSON.stringify(body);
+  let lastError: any = null;
+
+  for (const model of orderedModels) {
+    const url = `${GEMINI_API_BASE}/${encodePath(model)}:generateContent`;
+    const response = await geminiFetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: bodyJson,
+    });
+
+    const raw = await response.text();
+    const payload = parsePayload(raw);
+
+    if (!response.ok) {
+      const message = extractErrorMessage(payload, 'Gemini チャット生成に失敗しました。');
+      const debugId = extractDebugId(payload);
+      const geminiError = new GeminiApiError(message, {
+        status: response.status,
+        debugId,
+        body: payload,
+      });
+      console.error('Gemini chat generateContent error', {
+        status: response.status,
+        body: typeof raw === 'string' ? raw.slice(0, 512) : raw,
+        debugId,
+        model,
+        storeResource,
+      });
+
+      if (!shouldRetryChatModel(geminiError)) {
+        throw geminiError;
+      }
+
+      lastError = geminiError;
+      console.warn(`Gemini モデル ${model} でのチャット生成に失敗しました。フォールバックを試します。`, {
+        status: geminiError.status,
+        message: geminiError.message,
+      });
+      continue;
+    }
+
+    const candidates = Array.isArray((payload as any)?.candidates) ? (payload as any).candidates : [];
+    const normalizedCandidates: GeminiChatCandidate[] = candidates.map((candidate: any, index: number) => {
+      const parts = candidate?.content?.parts || candidate?.content || [];
+      const textParts: string[] = [];
+      for (const part of parts) {
+        if (part?.text) {
+          textParts.push(String(part.text));
+        }
+      }
+      const combined = textParts.join('\n').trim();
+      return {
+        text: combined,
+        finishReason: candidate?.finishReason || candidate?.finish_reason || null,
+        index: typeof candidate?.index === 'number' ? candidate.index : index,
+      };
+    });
+
+    const primary = normalizedCandidates.find((candidate) => candidate.text) || null;
+
+    return {
+      text: primary?.text || '',
+      candidates: normalizedCandidates,
+      usage: (payload as any)?.usageMetadata || (payload as any)?.usage_metadata || null,
+      raw: payload,
+    };
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error('利用可能な Gemini チャットモデルが選択されていません。');
+}
+
+const INLINE_MEDIA_MAX_BYTES = 20 * 1024 * 1024; // 20MB safety cap for inline Gemini requests
+
+function toBuffer(data: Buffer | ArrayBuffer | ArrayBufferView | ArrayLike<number>): Buffer {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+  if (ArrayBuffer.isView(data)) {
+    const view = data as ArrayBufferView;
+    return Buffer.from(view.buffer, view.byteOffset, view.byteLength);
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(new Uint8Array(data));
+  }
+  if (typeof (data as ArrayLike<number>)?.length === 'number') {
+    return Buffer.from(data as ArrayLike<number>);
+  }
+  throw new Error('Gemini に渡すメディアデータをバッファに変換できません。');
+}
+
+type GeminiMediaSource =
+  | {
+      kind: 'file';
+      fileUri: string;
+      mimeType?: string;
+    }
+  | {
+      kind: 'inline';
+      base64Data: string;
+      mimeType: string;
+    };
+
+function buildMediaPromptParts({
+  media,
+  prompt,
+}: {
+  media: GeminiMediaSource;
+  prompt: string;
+}) {
+  const parts: any[] = [];
+  if (media.kind === 'file') {
+    const fileData: Record<string, string> = { fileUri: media.fileUri };
+    if (media.mimeType && media.mimeType.trim()) {
+      fileData.mimeType = media.mimeType.trim();
+    }
+    parts.push({ fileData });
+  } else {
+    parts.push({ inlineData: { data: media.base64Data, mimeType: media.mimeType } });
+  }
+
+  if (prompt) {
+    parts.push({ text: prompt });
+  }
+  return parts;
+}
+
+function getDefaultModelOrder(mimeType?: string | null): string[] {
+  const flash = 'models/gemini-2.0-flash';
+  const pro = 'models/gemini-2.0-pro';
+  if (mimeType && mimeType.startsWith('video/')) {
+    // The Pro models generally provide better temporal reasoning for video.
+    return [pro, flash];
+  }
+  return [flash, pro];
+}
+
+function shouldRetryModel(error: any): boolean {
+  if (!(error instanceof GeminiApiError)) {
+    return false;
+  }
+  if (!error.status) {
+    return true;
+  }
+  return error.status >= 500 || error.status === 429;
+}
+
+function shouldRetryChatModel(error: any): boolean {
+  if (!(error instanceof GeminiApiError)) {
+    return false;
+  }
+  if (!error.status) {
+    return true;
+  }
+  return error.status === 404 || error.status === 429 || error.status >= 500;
+}
+
+async function invokeMediaAnalysis({
+  model,
+  media,
+  prompt,
+}: {
+  model: string;
+  media: GeminiMediaSource;
+  prompt: string;
+}): Promise<GeminiMediaAnalysisResult> {
   const requestBody = {
     contents: [
       {
         role: 'user',
-        parts: [
-          { text: prompt },
-          {
-            fileData:
-              options.mimeType && options.mimeType.trim()
-                ? { fileUri: fileName, mimeType: options.mimeType }
-                : { fileUri: fileName },
-          },
-        ],
+        parts: buildMediaPromptParts({ media, prompt }),
       },
     ],
   };
@@ -397,6 +830,8 @@ export async function analyzeFileWithGemini(options: {
       status: response.status,
       body: typeof raw === 'string' ? raw.slice(0, 512) : raw,
       debugId,
+      model,
+      media,
     });
     throw new GeminiApiError(`${message} (${response.status})`, {
       status: response.status,
@@ -426,9 +861,136 @@ export async function analyzeFileWithGemini(options: {
 
   return {
     text: primary?.text || '',
-    model: payload?.modelVersion || payload?.model || null,
+    model: payload?.modelVersion || payload?.model || model,
     candidates: normalizedCandidates,
     usage: payload?.usageMetadata || payload?.usage_metadata || null,
     raw: payload,
   };
+}
+
+export async function analyzeFileWithGemini(options: {
+  geminiFileName: string;
+  geminiFileUri?: string | null;
+  prompt?: string;
+  mimeType?: string;
+  model?: string;
+  modelFallbacks?: string[];
+}): Promise<GeminiMediaAnalysisResult> {
+  const fileName = String(options.geminiFileName || '').trim();
+  if (!fileName) {
+    throw new Error('Gemini に渡すファイル名が指定されていません。');
+  }
+
+  const fileUri = String(options.geminiFileUri || '').trim() || fileName;
+
+  const prompt =
+    options.prompt?.trim() ||
+    'このメディアの内容を要約し、重要なポイントと推奨アクションを日本語で提示してください。';
+
+  const preferred = normalizeModelId(options.model);
+  const fallbackList = (options.modelFallbacks || []).map((model) => normalizeModelId(model)).filter(Boolean) as string[];
+  const orderedModels = preferred
+    ? [preferred, ...fallbackList]
+    : [...getDefaultModelOrder(options.mimeType), ...fallbackList];
+
+  let lastError: any = null;
+  for (const candidate of orderedModels) {
+    if (!candidate) {
+      continue;
+    }
+    try {
+      return await invokeMediaAnalysis({
+        model: candidate,
+        media: {
+          kind: 'file',
+          fileUri,
+          mimeType: options.mimeType,
+        },
+        prompt,
+      });
+    } catch (error: any) {
+      lastError = error;
+      if (!shouldRetryModel(error)) {
+        throw error;
+      }
+      console.warn(`Gemini モデル ${candidate} での解析に失敗しました。フォールバックを試します。`, {
+        error: error instanceof Error ? error.message : error,
+      });
+      continue;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error('利用可能な Gemini モデルが選択されていません。');
+}
+
+export async function analyzeInlineMediaWithGemini(options: {
+  buffer: Buffer | ArrayBuffer | ArrayBufferView | ArrayLike<number>;
+  mimeType: string;
+  prompt?: string;
+  model?: string;
+  modelFallbacks?: string[];
+  maxBytes?: number;
+}): Promise<GeminiMediaAnalysisResult> {
+  const mimeType = String(options.mimeType || '').trim();
+  if (!mimeType) {
+    throw new Error('Gemini に渡すメディアの MIME タイプが指定されていません。');
+  }
+
+  const buffer = toBuffer(options.buffer);
+  if (!buffer.length) {
+    throw new Error('Gemini に渡すメディアデータが空です。');
+  }
+
+  const limit = typeof options.maxBytes === 'number' ? options.maxBytes : INLINE_MEDIA_MAX_BYTES;
+  if (buffer.length > limit) {
+    throw new Error(`Gemini に渡すメディアデータが大きすぎます。(最大 ${limit} バイト)`);
+  }
+
+  const base64Data = buffer.toString('base64');
+  const prompt =
+    options.prompt?.trim() ||
+    'このメディアの内容を要約し、重要なポイントと推奨アクションを日本語で提示してください。';
+
+  const preferred = normalizeModelId(options.model);
+  const fallbackList = (options.modelFallbacks || []).map((model) => normalizeModelId(model)).filter(Boolean) as string[];
+  const orderedModels = preferred
+    ? [preferred, ...fallbackList]
+    : [...getDefaultModelOrder(mimeType), ...fallbackList];
+
+  let lastError: any = null;
+  for (const candidate of orderedModels) {
+    if (!candidate) {
+      continue;
+    }
+    try {
+      return await invokeMediaAnalysis({
+        model: candidate,
+        media: {
+          kind: 'inline',
+          base64Data,
+          mimeType,
+        },
+        prompt,
+      });
+    } catch (error: any) {
+      lastError = error;
+      if (!shouldRetryModel(error)) {
+        throw error;
+      }
+      console.warn(`Gemini モデル ${candidate} でのインライン解析に失敗しました。フォールバックを試します。`, {
+        error: error instanceof Error ? error.message : error,
+      });
+      continue;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error('利用可能な Gemini モデルが選択されていません。');
 }

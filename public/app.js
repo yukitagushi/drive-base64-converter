@@ -442,6 +442,53 @@ function scheduleAuthRecovery(message) {
   });
 }
 
+function appendAccessTokenToBody(originalBody, token) {
+  if (!token || !originalBody) {
+    return originalBody;
+  }
+
+  if (typeof FormData !== 'undefined' && originalBody instanceof FormData) {
+    if (!originalBody.has('accessToken')) {
+      originalBody.set('accessToken', token);
+    }
+    return originalBody;
+  }
+
+  const contentType = typeof originalBody === 'string' ? 'string' : typeof originalBody;
+
+  if (contentType === 'string') {
+    try {
+      const parsed = originalBody ? JSON.parse(originalBody) : {};
+      if (typeof parsed === 'object' && parsed !== null && !parsed.accessToken) {
+        parsed.accessToken = token;
+        return JSON.stringify(parsed);
+      }
+    } catch (error) {
+      console.warn('Failed to append access token to request body:', error);
+    }
+    return originalBody;
+  }
+
+  if (contentType === 'object') {
+    try {
+      const cloned = Array.isArray(originalBody) ? [...originalBody] : { ...originalBody };
+      if (
+        cloned &&
+        typeof cloned === 'object' &&
+        !Array.isArray(cloned) &&
+        typeof cloned.accessToken === 'undefined'
+      ) {
+        cloned.accessToken = token;
+        return cloned;
+      }
+    } catch (error) {
+      console.warn('Failed to clone request body for access token injection:', error);
+    }
+  }
+
+  return originalBody;
+}
+
 async function safeFetch(url, options = {}) {
   const { skipAuthHandling = false, ...fetchOptions } = options || {};
   const mergedHeaders = { ...(fetchOptions?.headers || {}) };
@@ -452,14 +499,20 @@ async function safeFetch(url, options = {}) {
     mergedHeaders['Content-Type'] = 'application/json';
   }
   const hasAuthorization = Object.keys(mergedHeaders).some((key) => key.toLowerCase() === 'authorization');
+  let token = null;
   if (!hasAuthorization) {
-    const token = await getSupabaseAccessToken();
+    token = await getSupabaseAccessToken();
     if (token) {
       mergedHeaders.Authorization = `Bearer ${token}`;
     }
   }
 
-  const response = await fetch(url, { ...fetchOptions, headers: mergedHeaders });
+  let bodyWithToken = requestBody;
+  if (!hasAuthorization && token) {
+    bodyWithToken = appendAccessTokenToBody(requestBody, token);
+  }
+
+  const response = await fetch(url, { ...fetchOptions, headers: mergedHeaders, body: bodyWithToken });
   const contentType = response.headers.get('content-type') || '';
   const isJson = contentType.includes('application/json');
   const responseBody = isJson ? await response.json() : await response.text();
@@ -1708,7 +1761,7 @@ function updateSessionHint() {
 
 function resetConversation() {
   conversationHistory = [];
-  messageList.innerHTML = '';
+  renderConversation(conversationHistory);
   setStatus('ジェミニ準備完了');
 }
 
@@ -1910,7 +1963,6 @@ async function onChatSubmit(event) {
   chatInput.style.height = 'auto';
 
   appendMessage('user', text);
-  conversationHistory.push({ role: 'user', content: text });
   scrollToBottom();
 
   const loadingMessage = appendMessage('model', 'Gemini が考えています...', { loading: true });
@@ -1923,14 +1975,8 @@ async function onChatSubmit(event) {
     const data = await safeFetch('/api/chat', {
       method: 'POST',
       body: JSON.stringify({
-        query: text,
-        history: conversationHistory.slice(0, -1),
-        session: {
-          organizationId: sessionState.organizationId,
-          officeId: sessionState.officeId,
-          staffId: sessionState.staffId,
-          threadId: sessionState.threadId,
-        },
+        threadId: sessionState.threadId,
+        message: text,
       }),
     });
 
@@ -1938,19 +1984,13 @@ async function onChatSubmit(event) {
       throw new Error(data.error || '応答の取得に失敗しました');
     }
 
-    const answer = data.answer || '(回答なし)';
-    updateMessage(loadingMessage, answer, data.context);
-    conversationHistory.push({ role: 'model', content: answer });
+    conversationHistory = Array.isArray(data.messages) ? data.messages : [];
+    sessionState.threadId = data.threadId || sessionState.threadId;
+
+    renderConversation(conversationHistory);
     setStatus('ジェミニ準備完了');
 
-    if (data.session || data.threads) {
-      applySessionUpdate(data.session || sessionState, data.threads);
-      renderSessionSelectors();
-    }
-
-    if (data.thread) {
-      upsertThread(data.thread);
-    }
+    loadSession().catch((error) => console.error(error));
   } catch (error) {
     console.error(error);
     updateMessage(loadingMessage, `エラー: ${error.message}`);
@@ -2623,6 +2663,17 @@ function closeDialog(dialog) {
     dialog.classList.remove('is-open');
     dialog.dispatchEvent(new Event('close'));
   }
+}
+
+function renderConversation(messages = []) {
+  if (!messageList) return;
+  messageList.innerHTML = '';
+  const items = Array.isArray(messages) ? messages : [];
+  for (const entry of items) {
+    const normalizedRole = entry?.role === 'assistant' ? 'model' : entry?.role === 'system' ? 'model' : 'user';
+    appendMessage(normalizedRole, entry?.content || '');
+  }
+  scrollToBottom();
 }
 
 function appendMessage(role, text, options = {}) {
