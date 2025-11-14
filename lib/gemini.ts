@@ -240,6 +240,12 @@ function ensureStoreResourceName(nameOrId: string, displayName?: string): string
     return trimmed;
   }
 
+  if (trimmed.startsWith('stores/')) {
+    const slug = trimmed.slice('stores/'.length);
+    const sanitized = slugify(slug) || slug;
+    return `fileSearchStores/${sanitized}`;
+  }
+
   if (trimmed.startsWith('projects/')) {
     const match = trimmed.match(/fileSearchStores\/(.+)$/);
     if (match?.[1]) {

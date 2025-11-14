@@ -155,6 +155,13 @@ const STORE_ONLY_EXTENSIONS = new Set(['zip', 'xlsx', 'xls', 'xlsm', 'xlsb']);
 
 const GEMINI_STORE_FAILURE_NOTE = 'Gemini File Search 登録に失敗しましたが、ファイルは保存されました。';
 const GEMINI_ANALYSIS_FAILURE_NOTE = 'Gemini 解析に失敗しましたが、ファイルは保存しました。';
+const PENDING_GEMINI_PREFIX = 'pending:';
+
+function createPendingGeminiFileName(storeId: string): string {
+  const timePart = Date.now().toString(36);
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `${PENDING_GEMINI_PREFIX}${storeId}:${timePart}:${randomPart}`;
+}
 
 function getExtension(filename?: string | null): string {
   const ext = extname(String(filename || '')).toLowerCase();
@@ -1217,9 +1224,16 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
     });
   }
 
+  let storedGeminiFileName = uploadResult.geminiFileName || '';
+  let placeholderUsed = false;
+  if (!storedGeminiFileName) {
+    placeholderUsed = true;
+    storedGeminiFileName = createPendingGeminiFileName(params.storeRow.id);
+  }
+
   const insertPayload = {
     file_store_id: params.storeRow.id,
-    gemini_file_name: uploadResult.geminiFileName || null,
+    gemini_file_name: storedGeminiFileName,
     display_name: uploadResult.displayName || params.displayName,
     description: description,
     size_bytes: uploadResult.sizeBytes || params.buffer.length,
@@ -1259,6 +1273,10 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
   }
 
   const record = normalizeFileRecord(readerRow || adminInserted);
+
+  if (placeholderUsed) {
+    record.geminiFileName = '';
+  }
 
   return { record, gemini: uploadResult };
 }
@@ -1451,10 +1469,12 @@ function createMediaAnalysisSummary(
 }
 
 function normalizeFileRecord(row: any): NormalizedFileRecord {
+  const rawGeminiName = row?.gemini_file_name || '';
+  const normalizedGeminiName = rawGeminiName.startsWith(PENDING_GEMINI_PREFIX) ? '' : rawGeminiName;
   return {
     id: row?.id || '',
     fileStoreId: row?.file_store_id || '',
-    geminiFileName: row?.gemini_file_name || '',
+    geminiFileName: normalizedGeminiName,
     displayName: row?.display_name || '',
     description: row?.description ?? null,
     sizeBytes:
