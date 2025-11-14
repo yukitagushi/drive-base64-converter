@@ -25,6 +25,9 @@ import { ensureStorageBucket } from '../lib/storage';
  *   - Reject unauthenticated requests with 401.
  *   - Persist the binary to Supabase (and optionally Gemini File Search) for CSV/PNG/ZIP/XLSX inputs.
  *   - Attempt Gemini media analysis for images/videos without failing the overall upload when analysis fails.
+ *   - HTTP status policy:
+ *       201 for successful uploads (even if Gemini File Search/Gemini analysis is skipped with warning notes),
+ *       400/401/403 for client or auth issues, and 500 only when Supabase or Gemini permanently fail.
  *   - Return structured error information (with debug hints in non-production) for fatal failures only.
  */
 
@@ -1026,7 +1029,7 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
     });
     items.push(result.record);
     gemini.push(result.gemini);
-    if (!result.gemini.geminiFileName) {
+    if (!result.gemini.registered || !result.gemini.geminiFileName) {
       pushNote(GEMINI_STORE_FAILURE_NOTE);
     }
     return result;
@@ -1093,7 +1096,9 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       displayName: context.displayName,
       mimeType: normalizedMime,
     });
-    const canAnalyzeStored = Boolean(original.gemini.geminiFileName);
+    const canAnalyzeStored = Boolean(
+      original.gemini.registered && original.gemini.geminiFileName && original.gemini.geminiFileUri
+    );
 
     if (!analysis && canAnalyzeStored) {
       try {
@@ -1138,7 +1143,9 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       displayName: context.displayName,
       mimeType: normalizedMime,
     });
-    const canAnalyzeStored = Boolean(original.gemini.geminiFileName);
+    const canAnalyzeStored = Boolean(
+      original.gemini.registered && original.gemini.geminiFileName && original.gemini.geminiFileUri
+    );
 
     let analysis: GeminiMediaAnalysisResult | null = null;
     if (canAnalyzeStored) {
@@ -1202,6 +1209,13 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
     displayName: params.displayName,
     description: description || undefined,
   });
+
+  if (!uploadResult.registered) {
+    logDocumentsError('gemini', 'Gemini File Search registration skipped due to upstream error', null, {
+      fileStoreId: params.storeRow.id,
+      displayName: params.displayName,
+    });
+  }
 
   const insertPayload = {
     file_store_id: params.storeRow.id,

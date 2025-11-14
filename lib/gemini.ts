@@ -54,6 +54,8 @@ export interface GeminiFileUploadResult {
   sizeBytes: number;
   createTime: string | null;
   updateTime: string | null;
+  /** Indicates whether the file was registered in Gemini File Search. */
+  registered: boolean;
 }
 
 export interface GeminiMediaAnalysisCandidate {
@@ -177,6 +179,7 @@ function normalizeFile(entry: GeminiFileResponse): GeminiFileUploadResult {
     sizeBytes: typeof entry.sizeBytes === 'string' ? Number(entry.sizeBytes) : Number(entry.sizeBytes || 0),
     createTime: entry.createTime || null,
     updateTime: entry.updateTime || null,
+    registered: true,
   };
 }
 
@@ -427,11 +430,12 @@ export async function uploadFileToStore(options: {
       return {
         geminiFileName: '',
         geminiFileUri: null,
-        displayName: options.displayName || '',
+        displayName: options.displayName || 'document',
         mimeType: options.mimeType || null,
         sizeBytes: options.fileBuffer.length,
         createTime: null,
         updateTime: null,
+        registered: false,
       };
     }
 

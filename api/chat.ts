@@ -19,6 +19,8 @@ import {
  *   - Persist every user and assistant turn to chat_threads/chat_messages.
  *   - Invoke Gemini with File Search context and return the aggregated transcript.
  *   - Surface Supabase/Gemini failures as structured JSON instead of crashing the function.
+ *   - HTTP status policy: 200 on success, 400 for missing context (no store/office/thread),
+ *     401/403 for auth failures, and 500 only when Supabase or Gemini return unexpected errors.
  */
 
 const CHAT_API_NAME = '/api/chat';
