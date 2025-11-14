@@ -521,6 +521,10 @@ function buildChatRequestContents(messages: GeminiChatMessage[]) {
   return { contents, systemParts };
 }
 
+function getDefaultChatModelOrder(): string[] {
+  return ['models/gemini-2.0-flash', 'models/gemini-2.0-pro'];
+}
+
 export async function generateChatResponse(options: {
   messages: GeminiChatMessage[];
   model?: string;
@@ -543,7 +547,6 @@ export async function generateChatResponse(options: {
     throw new Error('Gemini チャットにはユーザーまたはアシスタントのメッセージが必要です。');
   }
 
-  const model = normalizeModelId(options.model) || 'models/gemini-1.5-pro';
   const body: Record<string, any> = {
     contents,
   };
@@ -579,14 +582,16 @@ export async function generateChatResponse(options: {
     body.generationConfig = generationConfig;
   }
 
+  let storeResource: string | null = null;
   if (options.fileSearch?.storeName) {
-    const storeResource = ensureStoreResourceName(options.fileSearch.storeName);
-    const fileSearchTool: Record<string, any> = {
-      file_search: {
-        file_search_store_names: [storeResource],
+    storeResource = ensureStoreResourceName(options.fileSearch.storeName);
+    body.tools = [
+      {
+        file_search: {
+          file_search_store_names: [storeResource],
+        },
       },
-    };
-    body.tools = [fileSearchTool];
+    ];
 
     const fileSearchConfig: Record<string, any> = {};
     if (typeof options.fileSearch.maxChunks === 'number') {
@@ -603,59 +608,93 @@ export async function generateChatResponse(options: {
     }
   }
 
-  const url = `${GEMINI_API_BASE}/${encodePath(model)}:generateContent`;
-  const response = await geminiFetch(url, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
+  const preferredModel = normalizeModelId(options.model);
+  const defaultModels = getDefaultChatModelOrder();
+  const orderedModels = (preferredModel
+    ? [preferredModel, ...defaultModels]
+    : [...defaultModels]
+  ).filter((model, index, arr) => model && arr.indexOf(model) === index) as string[];
 
-  const raw = await response.text();
-  const payload = parsePayload(raw);
-
-  if (!response.ok) {
-    const message = extractErrorMessage(payload, 'Gemini チャット生成に失敗しました。');
-    const debugId = extractDebugId(payload);
-    console.error('Gemini chat generateContent error', {
-      status: response.status,
-      body: typeof raw === 'string' ? raw.slice(0, 512) : raw,
-      debugId,
-      model,
-    });
-    throw new GeminiApiError(message, {
-      status: response.status,
-      debugId,
-      body: payload,
-    });
+  if (!orderedModels.length) {
+    throw new Error('利用可能な Gemini チャットモデルが選択されていません。');
   }
 
-  const candidates = Array.isArray((payload as any)?.candidates) ? (payload as any).candidates : [];
-  const normalizedCandidates: GeminiChatCandidate[] = candidates.map((candidate: any, index: number) => {
-    const parts = candidate?.content?.parts || candidate?.content || [];
-    const textParts: string[] = [];
-    for (const part of parts) {
-      if (part?.text) {
-        textParts.push(String(part.text));
+  const bodyJson = JSON.stringify(body);
+  let lastError: any = null;
+
+  for (const model of orderedModels) {
+    const url = `${GEMINI_API_BASE}/${encodePath(model)}:generateContent`;
+    const response = await geminiFetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: bodyJson,
+    });
+
+    const raw = await response.text();
+    const payload = parsePayload(raw);
+
+    if (!response.ok) {
+      const message = extractErrorMessage(payload, 'Gemini チャット生成に失敗しました。');
+      const debugId = extractDebugId(payload);
+      const geminiError = new GeminiApiError(message, {
+        status: response.status,
+        debugId,
+        body: payload,
+      });
+      console.error('Gemini chat generateContent error', {
+        status: response.status,
+        body: typeof raw === 'string' ? raw.slice(0, 512) : raw,
+        debugId,
+        model,
+        storeResource,
+      });
+
+      if (!shouldRetryChatModel(geminiError)) {
+        throw geminiError;
       }
+
+      lastError = geminiError;
+      console.warn(`Gemini モデル ${model} でのチャット生成に失敗しました。フォールバックを試します。`, {
+        status: geminiError.status,
+        message: geminiError.message,
+      });
+      continue;
     }
-    const combined = textParts.join('\n').trim();
+
+    const candidates = Array.isArray((payload as any)?.candidates) ? (payload as any).candidates : [];
+    const normalizedCandidates: GeminiChatCandidate[] = candidates.map((candidate: any, index: number) => {
+      const parts = candidate?.content?.parts || candidate?.content || [];
+      const textParts: string[] = [];
+      for (const part of parts) {
+        if (part?.text) {
+          textParts.push(String(part.text));
+        }
+      }
+      const combined = textParts.join('\n').trim();
+      return {
+        text: combined,
+        finishReason: candidate?.finishReason || candidate?.finish_reason || null,
+        index: typeof candidate?.index === 'number' ? candidate.index : index,
+      };
+    });
+
+    const primary = normalizedCandidates.find((candidate) => candidate.text) || null;
+
     return {
-      text: combined,
-      finishReason: candidate?.finishReason || candidate?.finish_reason || null,
-      index: typeof candidate?.index === 'number' ? candidate.index : index,
+      text: primary?.text || '',
+      candidates: normalizedCandidates,
+      usage: (payload as any)?.usageMetadata || (payload as any)?.usage_metadata || null,
+      raw: payload,
     };
-  });
+  }
 
-  const primary = normalizedCandidates.find((candidate) => candidate.text) || null;
+  if (lastError) {
+    throw lastError;
+  }
 
-  return {
-    text: primary?.text || '',
-    candidates: normalizedCandidates,
-    usage: (payload as any)?.usageMetadata || (payload as any)?.usage_metadata || null,
-    raw: payload,
-  };
+  throw new Error('利用可能な Gemini チャットモデルが選択されていません。');
 }
 
 const INLINE_MEDIA_MAX_BYTES = 20 * 1024 * 1024; // 20MB safety cap for inline Gemini requests
@@ -714,13 +753,13 @@ function buildMediaPromptParts({
 }
 
 function getDefaultModelOrder(mimeType?: string | null): string[] {
-  const defaults = ['models/gemini-2.5-flash'];
-  const fallback = 'models/gemini-1.5-pro';
+  const flash = 'models/gemini-2.0-flash';
+  const pro = 'models/gemini-2.0-pro';
   if (mimeType && mimeType.startsWith('video/')) {
-    // The 1.5 Pro models generally provide better temporal reasoning for video.
-    return [fallback, ...defaults];
+    // The Pro models generally provide better temporal reasoning for video.
+    return [pro, flash];
   }
-  return [...defaults, fallback];
+  return [flash, pro];
 }
 
 function shouldRetryModel(error: any): boolean {
@@ -731,6 +770,16 @@ function shouldRetryModel(error: any): boolean {
     return true;
   }
   return error.status >= 500 || error.status === 429;
+}
+
+function shouldRetryChatModel(error: any): boolean {
+  if (!(error instanceof GeminiApiError)) {
+    return false;
+  }
+  if (!error.status) {
+    return true;
+  }
+  return error.status === 404 || error.status === 429 || error.status >= 500;
 }
 
 async function invokeMediaAnalysis({
