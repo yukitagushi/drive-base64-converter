@@ -581,20 +581,26 @@ export async function generateChatResponse(options: {
 
   if (options.fileSearch?.storeName) {
     const storeResource = ensureStoreResourceName(options.fileSearch.storeName);
-    body.tools = [{ fileSearch: {} }];
-    const fileSearchConfig: Record<string, any> = {
-      vectorStore: [{ name: storeResource }],
+    const fileSearchTool: Record<string, any> = {
+      file_search: {
+        file_search_store_names: [storeResource],
+      },
     };
+    body.tools = [fileSearchTool];
+
+    const fileSearchConfig: Record<string, any> = {};
     if (typeof options.fileSearch.maxChunks === 'number') {
-      fileSearchConfig.maxChunks = options.fileSearch.maxChunks;
+      fileSearchConfig.max_chunks = options.fileSearch.maxChunks;
     }
     if (typeof options.fileSearch.dynamicThreshold === 'number') {
-      fileSearchConfig.dynamicRetrievalConfig = {
+      fileSearchConfig.dynamic_retrieval_config = {
         mode: 'MODE_DYNAMIC',
-        dynamicThreshold: options.fileSearch.dynamicThreshold,
+        dynamic_threshold: options.fileSearch.dynamicThreshold,
       };
     }
-    body.toolConfig = { fileSearch: fileSearchConfig };
+    if (Object.keys(fileSearchConfig).length > 0) {
+      body.tool_config = { file_search: fileSearchConfig };
+    }
   }
 
   const url = `${GEMINI_API_BASE}/${encodePath(model)}:generateContent`;
