@@ -1031,11 +1031,18 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
   };
 
   if (isZipType(normalizedMime, extension)) {
-    await upload({
+    const originalRecord = await recordFileWithoutGemini({
+      admin: context.admin,
+      supabase: context.supabase,
+      storeRow: context.storeRow,
+      staffId: context.staffId,
+      baseDescription,
       buffer: context.fileBuffer,
       displayName: context.displayName,
       mimeType: normalizedMime,
+      extraDescription: null,
     });
+    items.push(originalRecord);
 
     let extraction: SimpleZipExtractionResult;
     try {
@@ -1045,12 +1052,18 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
     }
 
     for (const [index, file] of extraction.files.entries()) {
-      await upload({
+      const extractedRecord = await recordFileWithoutGemini({
+        admin: context.admin,
+        supabase: context.supabase,
+        storeRow: context.storeRow,
+        staffId: context.staffId,
+        baseDescription,
         buffer: file.buffer,
         displayName: file.displayName || `extracted-${index + 1}`,
         mimeType: file.mimeType || 'application/octet-stream',
-        extraDescription: null,
+        extraDescription: 'ZIP アーカイブから展開されたファイルです。',
       });
+      items.push(extractedRecord);
     }
 
     if (extraction.files.length) {
@@ -1213,13 +1226,62 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
     storedGeminiFileName = createPendingGeminiFileName(params.storeRow.id);
   }
 
+  const record = await insertFileRecord({
+    admin: params.admin,
+    supabase: params.supabase,
+    storeRow: params.storeRow,
+    staffId: params.staffId,
+    displayName: uploadResult.displayName || params.displayName,
+    description,
+    sizeBytes: uploadResult.sizeBytes || params.buffer.length,
+    mimeType: uploadResult.mimeType || params.mimeType,
+    geminiFileName: storedGeminiFileName,
+  });
+
+  if (placeholderUsed) {
+    record.geminiFileName = '';
+  }
+
+  return { record, gemini: uploadResult };
+}
+
+async function recordFileWithoutGemini(params: UploadRecordParams): Promise<NormalizedFileRecord> {
+  const description = appendDescription(params.baseDescription, params.extraDescription || null);
+  const record = await insertFileRecord({
+    admin: params.admin,
+    supabase: params.supabase,
+    storeRow: params.storeRow,
+    staffId: params.staffId,
+    displayName: params.displayName,
+    description,
+    sizeBytes: params.buffer.length,
+    mimeType: params.mimeType,
+    geminiFileName: '',
+  });
+  record.geminiFileName = '';
+  return record;
+}
+
+interface InsertFileRecordParams {
+  admin: ReturnType<typeof getSupabaseAdmin>;
+  supabase: ReturnType<typeof getSupabaseClientWithToken>;
+  storeRow: { id: string };
+  staffId: string;
+  displayName: string;
+  description: string | null;
+  sizeBytes: number;
+  mimeType: string;
+  geminiFileName: string;
+}
+
+async function insertFileRecord(params: InsertFileRecordParams): Promise<NormalizedFileRecord> {
   const insertPayload = {
     file_store_id: params.storeRow.id,
-    gemini_file_name: storedGeminiFileName,
-    display_name: uploadResult.displayName || params.displayName,
-    description: description,
-    size_bytes: uploadResult.sizeBytes || params.buffer.length,
-    mime_type: uploadResult.mimeType || params.mimeType,
+    gemini_file_name: params.geminiFileName,
+    display_name: params.displayName,
+    description: params.description,
+    size_bytes: params.sizeBytes,
+    mime_type: params.mimeType,
     uploaded_by: params.staffId,
   };
 
@@ -1254,13 +1316,7 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
     });
   }
 
-  const record = normalizeFileRecord(readerRow || adminInserted);
-
-  if (placeholderUsed) {
-    record.geminiFileName = '';
-  }
-
-  return { record, gemini: uploadResult };
+  return normalizeFileRecord(readerRow || adminInserted);
 }
 
 interface SimpleZipEntryRecord {
