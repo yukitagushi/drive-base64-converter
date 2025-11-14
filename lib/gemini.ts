@@ -583,29 +583,40 @@ export async function generateChatResponse(options: {
   }
 
   let storeResource: string | null = null;
-  if (options.fileSearch?.storeName) {
-    storeResource = ensureStoreResourceName(options.fileSearch.storeName);
-    body.tools = [
-      {
-        file_search: {
-          file_search_store_names: [storeResource],
-        },
+  const tools: any[] = [];
+  let toolConfig: Record<string, any> | undefined;
+  const requestedStoreName = typeof options.fileSearch?.storeName === 'string'
+    ? options.fileSearch.storeName.trim()
+    : '';
+
+  if (requestedStoreName) {
+    storeResource = ensureStoreResourceName(requestedStoreName);
+    tools.push({
+      file_search: {
+        file_search_store_names: [storeResource],
       },
-    ];
+    });
 
     const fileSearchConfig: Record<string, any> = {};
-    if (typeof options.fileSearch.maxChunks === 'number') {
+    if (typeof options.fileSearch?.maxChunks === 'number') {
       fileSearchConfig.max_chunks = options.fileSearch.maxChunks;
     }
-    if (typeof options.fileSearch.dynamicThreshold === 'number') {
+    if (typeof options.fileSearch?.dynamicThreshold === 'number') {
       fileSearchConfig.dynamic_retrieval_config = {
         mode: 'MODE_DYNAMIC',
         dynamic_threshold: options.fileSearch.dynamicThreshold,
       };
     }
     if (Object.keys(fileSearchConfig).length > 0) {
-      body.tool_config = { file_search: fileSearchConfig };
+      toolConfig = { file_search: fileSearchConfig };
     }
+  }
+
+  if (tools.length > 0) {
+    body.tools = tools;
+  }
+  if (toolConfig) {
+    body.tool_config = toolConfig;
   }
 
   const preferredModel = normalizeModelId(options.model);
