@@ -7,6 +7,8 @@ import {
 
 export const SUMMARY_DESCRIPTION = 'Gemini によるメディア解析テキストです。';
 export const SUMMARY_MIME_TYPE = 'text/plain';
+export const AUDIO_TRANSCRIPT_DESCRIPTION = 'Gemini による音声文字起こしテキストです。';
+const AUDIO_TRANSCRIPT_PROMPT = 'この音声の内容をすべて日本語で文字起こししてください。';
 const DEFAULT_STORAGE_BUCKET_CANDIDATES = ['file-store-files', 'gemini-upload-cache'];
 const UNREGISTERED_SENTINELS = new Set(['', 'EMPTY']);
 const DOCUMENT_MIME_PREFIXES = ['text/'];
@@ -46,6 +48,12 @@ export interface SummaryRecord {
 }
 
 export interface EnsureMediaSummaryResult {
+  status: 'already-exists' | 'created';
+  summaryName: string;
+  summaryFile: SummaryRecord;
+}
+
+export interface EnsureAudioTranscriptResult {
   status: 'already-exists' | 'created';
   summaryName: string;
   summaryFile: SummaryRecord;
@@ -123,6 +131,10 @@ export function isVideoMime(mimeType: string | null | undefined): boolean {
   return normalizeMime(mimeType).startsWith('video/');
 }
 
+export function isAudioMime(mimeType: string | null | undefined): boolean {
+  return normalizeMime(mimeType).startsWith('audio/');
+}
+
 export function isMediaMime(mimeType: string | null | undefined): boolean {
   return isImageMime(mimeType) || isVideoMime(mimeType);
 }
@@ -178,6 +190,32 @@ function createMediaAnalysisSummary(originalName: string, analysis: any): string
       lines.push('', '---', 'トークン使用量:', JSON.stringify(analysis.usage, null, 2));
     } catch (error) {
       console.warn('geminiMediaSummary failed to stringify usage payload', error);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function createAudioTranscriptDocument(originalName: string, transcript: string, analysis: any): string {
+  const lines: string[] = [];
+  lines.push('# Gemini 音声文字起こし');
+  lines.push(`対象ファイル: ${originalName}`);
+  if (analysis?.model) {
+    lines.push(`モデル: ${analysis.model}`);
+  }
+
+  const cleaned = transcript?.trim() || '';
+  if (cleaned) {
+    lines.push('', cleaned);
+  } else {
+    lines.push('', '（Gemini から文字起こし結果を取得できませんでした）');
+  }
+
+  if (analysis?.usage) {
+    try {
+      lines.push('', '---', 'トークン使用量:', JSON.stringify(analysis.usage, null, 2));
+    } catch (error) {
+      console.warn('geminiMediaSummary failed to stringify transcript usage payload', error);
     }
   }
 
@@ -406,15 +444,17 @@ async function insertSummaryRecord(
     summaryBuffer: Buffer;
     geminiFileName: string | null;
     staffId: string;
+    description?: string | null;
+    mimeType?: string | null;
   },
 ): Promise<SummaryRecord> {
   const insertPayload = {
     file_store_id: params.fileStoreId,
     gemini_file_name: params.geminiFileName,
     display_name: params.summaryName,
-    description: SUMMARY_DESCRIPTION,
+    description: params.description ?? SUMMARY_DESCRIPTION,
     size_bytes: params.summaryBuffer.length,
-    mime_type: SUMMARY_MIME_TYPE,
+    mime_type: params.mimeType ?? SUMMARY_MIME_TYPE,
     uploaded_by: params.staffId,
   };
 
@@ -537,6 +577,80 @@ export async function ensureVideoSummaryForFile(params: {
     throw new Error('動画ファイルのみ処理できます。');
   }
   return ensureMediaSummaryForFile(params);
+}
+
+export async function ensureAudioTranscriptForFile(params: {
+  admin: any;
+  supabase: any;
+  fileRow: FileRow;
+  storeRow: StoreRow;
+  staffId: string;
+}): Promise<EnsureAudioTranscriptResult> {
+  if (!isAudioMime(params.fileRow.mime_type)) {
+    throw new Error('音声ファイルのみ処理できます。');
+  }
+
+  const baseName = stripExtension(params.fileRow.display_name || 'audio') || 'audio';
+  const summaryName = `${baseName}-transcript.txt`;
+
+  const existingSummary = await findExistingSummary(params.admin, params.fileRow.file_store_id, summaryName);
+  if (existingSummary) {
+    if (isUnregisteredGeminiName(params.fileRow.gemini_file_name)) {
+      await markOriginalFileAsProcessed(params.admin, params.fileRow.id, existingSummary.geminiFileName);
+      params.fileRow.gemini_file_name = existingSummary.geminiFileName ?? params.fileRow.gemini_file_name;
+    }
+    return {
+      status: 'already-exists',
+      summaryName,
+      summaryFile: existingSummary,
+    };
+  }
+
+  const originalBuffer = await downloadOriginalFile(params.admin, params.fileRow);
+  if (!originalBuffer.length) {
+    throw new Error('保存されたファイルに内容がありません。');
+  }
+
+  const analysis = await analyzeInlineMediaWithGemini({
+    buffer: originalBuffer,
+    mimeType: params.fileRow.mime_type || 'audio/mpeg',
+    prompt: AUDIO_TRANSCRIPT_PROMPT,
+  });
+
+  const transcriptText = analysis?.text ? String(analysis.text) : '';
+  const transcriptDocument = createAudioTranscriptDocument(
+    params.fileRow.display_name || baseName,
+    transcriptText,
+    analysis,
+  );
+  const summaryBuffer = Buffer.from(transcriptDocument, 'utf8');
+
+  const uploadResult = await uploadFileToStore({
+    storeName: params.storeRow.gemini_store_name,
+    fileBuffer: summaryBuffer,
+    mimeType: SUMMARY_MIME_TYPE,
+    displayName: summaryName,
+    description: AUDIO_TRANSCRIPT_DESCRIPTION,
+  });
+
+  const summaryRecord = await insertSummaryRecord(params.admin, params.supabase, {
+    fileStoreId: params.fileRow.file_store_id,
+    summaryName,
+    summaryBuffer,
+    geminiFileName: uploadResult.geminiFileName || null,
+    staffId: params.staffId,
+    description: AUDIO_TRANSCRIPT_DESCRIPTION,
+    mimeType: SUMMARY_MIME_TYPE,
+  });
+
+  await markOriginalFileAsProcessed(params.admin, params.fileRow.id, summaryRecord.geminiFileName || uploadResult.geminiFileName);
+  params.fileRow.gemini_file_name = summaryRecord.geminiFileName || uploadResult.geminiFileName || params.fileRow.gemini_file_name;
+
+  return {
+    status: 'created',
+    summaryName,
+    summaryFile: summaryRecord,
+  };
 }
 
 export interface EnsureDocumentUploadResult {

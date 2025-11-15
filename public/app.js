@@ -274,6 +274,7 @@ let storeCache = [];
 const storeFilesCache = new Map();
 const imageSummaryRequestState = new Map();
 const videoSummaryRequestState = new Map();
+const audioTranscriptRequestState = new Map();
 const storeSyncRequestState = new Map();
 
 let supabaseBrowserClient = null;
@@ -2665,6 +2666,22 @@ function renderFileList(container, files) {
       actions.appendChild(summarizeVideoBtn);
     }
 
+    if (isAudioMimeType(file.mimeType)) {
+      // 音声文字起こしボタン: Gemini 音声トランスクリプト API を起動する
+      const transcribeBtn = document.createElement('button');
+      transcribeBtn.type = 'button';
+      transcribeBtn.className = 'btn btn-ghost btn-compact';
+      transcribeBtn.dataset.action = 'register-audio-transcript';
+      const isTranscribing = Boolean(file.id && audioTranscriptRequestState.get(file.id));
+      transcribeBtn.textContent = isTranscribing ? '文字起こし中…' : '文字起こし';
+      transcribeBtn.title = 'Gemini で音声を文字起こしします';
+      if (isTranscribing) {
+        transcribeBtn.disabled = true;
+        transcribeBtn.dataset.loading = '1';
+      }
+      actions.appendChild(transcribeBtn);
+    }
+
     if (file.geminiFileName) {
       const analyzeBtn = document.createElement('button');
       analyzeBtn.type = 'button';
@@ -2702,6 +2719,11 @@ function isImageMimeType(value) {
 function isVideoMimeType(value) {
   const lower = normalizeMimeTypeValue(value).toLowerCase();
   return Boolean(lower) && lower.startsWith('video/');
+}
+
+function isAudioMimeType(value) {
+  const lower = normalizeMimeTypeValue(value).toLowerCase();
+  return Boolean(lower) && lower.startsWith('audio/');
 }
 
 function isMediaMimeType(value) {
@@ -2744,6 +2766,18 @@ async function onStoreFileAction(event) {
 
   if (button.dataset.action === 'register-video-summary') {
     registerVideoSummary({
+      button,
+      container,
+      displayName,
+      fileId,
+      mimeType,
+      storeId,
+    });
+    return;
+  }
+
+  if (button.dataset.action === 'register-audio-transcript') {
+    registerAudioTranscript({
       button,
       container,
       displayName,
@@ -2874,6 +2908,65 @@ function registerVideoSummary({ button, container, displayName, fileId, mimeType
         button.disabled = false;
         delete button.dataset.loading;
         button.textContent = '動画解析';
+      }
+    });
+}
+
+function registerAudioTranscript({ button, container, displayName, fileId, mimeType, storeId }) {
+  if (!ensureAuthenticated({ message: '音声を文字起こしするにはログインしてください。' })) {
+    return;
+  }
+
+  if (!fileId) {
+    console.error('音声文字起こしに必要なファイル ID が見つかりません。');
+    return;
+  }
+
+  if (!isAudioMimeType(mimeType)) {
+    showToast('音声ファイルのみ文字起こしできます。', { type: 'error' });
+    return;
+  }
+
+  if (audioTranscriptRequestState.get(fileId)) {
+    return;
+  }
+
+  audioTranscriptRequestState.set(fileId, true);
+  if (button) {
+    button.disabled = true;
+    button.dataset.loading = '1';
+    button.textContent = '文字起こし中…';
+  }
+
+  safeFetch('/api/gemini-register-audio-transcript', {
+    method: 'POST',
+    body: JSON.stringify({ fileId }),
+  })
+    .then((response) => {
+      console.log('register-audio-transcript response:', response);
+
+      const alreadyProcessed = Boolean(response?.alreadyProcessed);
+      if (alreadyProcessed) {
+        showToast('この音声はすでに文字起こし済みです。');
+      } else if (response?.success) {
+        showToast('文字起こしテキストを登録しました。');
+      } else {
+        showToast('音声文字起こしの結果を受信しました。');
+      }
+    })
+    .catch((error) => {
+      console.error('音声文字起こしの登録に失敗しました:', error);
+      if (error?.body) {
+        console.error('register-audio-transcript error body:', error.body);
+      }
+      showToast('音声文字起こしに失敗しました。', { type: 'error' });
+    })
+    .finally(() => {
+      audioTranscriptRequestState.delete(fileId);
+      if (button) {
+        button.disabled = false;
+        delete button.dataset.loading;
+        button.textContent = '文字起こし';
       }
     });
 }

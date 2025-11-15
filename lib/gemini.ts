@@ -952,14 +952,19 @@ export async function analyzeInlineMediaWithGemini(options: {
     throw new Error('Gemini に渡すメディアの MIME タイプが指定されていません。');
   }
 
-  const buffer = toBuffer(options.buffer);
+  let buffer = toBuffer(options.buffer);
   if (!buffer.length) {
     throw new Error('Gemini に渡すメディアデータが空です。');
   }
 
   const limit = typeof options.maxBytes === 'number' ? options.maxBytes : INLINE_MEDIA_MAX_BYTES;
   if (buffer.length > limit) {
-    throw new Error(`Gemini に渡すメディアデータが大きすぎます。(最大 ${limit} バイト)`);
+    console.warn('analyzeInlineMediaWithGemini: media truncated for analysis', {
+      mimeType,
+      originalBytes: buffer.length,
+      truncatedTo: limit,
+    });
+    buffer = buffer.subarray(0, limit);
   }
 
   const base64Data = buffer.toString('base64');
