@@ -2633,12 +2633,13 @@ function renderFileList(container, files) {
     actions.className = 'file-row__actions';
 
     if (isImageMimeType(file.mimeType)) {
+      // 画像解析ボタン: Gemini 画像サマリ API を起動する
       const summarizeBtn = document.createElement('button');
       summarizeBtn.type = 'button';
       summarizeBtn.className = 'btn btn-ghost btn-compact';
       summarizeBtn.dataset.action = 'register-image-summary';
-      summarizeBtn.textContent = '画像を解析してテキスト化';
-      summarizeBtn.title = 'Gemini で画像を解析してテキストにします';
+      summarizeBtn.textContent = '画像解析';
+      summarizeBtn.title = 'Gemini で画像を解析してテキスト化します';
       if (file.id && imageSummaryRequestState.get(file.id)) {
         summarizeBtn.disabled = true;
       }
@@ -2739,6 +2740,7 @@ async function registerImageSummary({ button, container, displayName, fileId, mi
   let refreshFn = null;
 
   try {
+    // safeFetch は Authorization: Bearer を自動付与する
     const response = await safeFetch('/api/gemini-register-image-summary', {
       method: 'POST',
       body: JSON.stringify({ fileId }),
