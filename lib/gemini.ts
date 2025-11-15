@@ -389,10 +389,8 @@ export async function uploadFileToStore(options: {
   const uploadResourcePath = normalizedStoreResource;
 
   const metadataPayload = {
-    file: {
-      displayName: options.displayName || 'document',
-      mimeType: sanitizedMimeType,
-    },
+    displayName: options.displayName || 'document',
+    mimeType: sanitizedMimeType,
   };
   // NOTE: Gemini's upload metadata currently rejects unknown fields such as
   // "description", so we persist descriptions only in Supabase instead of the
