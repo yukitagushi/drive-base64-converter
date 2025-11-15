@@ -464,3 +464,16 @@ export async function ensureImageSummaryForFile(params: {
   }
   return ensureMediaSummaryForFile(params);
 }
+
+export async function ensureVideoSummaryForFile(params: {
+  admin: any;
+  supabase: any;
+  fileRow: FileRow;
+  storeRow: StoreRow;
+  staffId: string;
+}): Promise<EnsureMediaSummaryResult> {
+  if (!isVideoMime(params.fileRow.mime_type)) {
+    throw new Error('動画ファイルのみ処理できます。');
+  }
+  return ensureMediaSummaryForFile(params);
+}

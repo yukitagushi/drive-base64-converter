@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { GeminiApiError } from '../lib/gemini';
 import {
   ensureMediaSummaryForFile,
+  EnsureMediaSummaryResult,
   FileRow,
   StoreRow,
   isMediaMime,
@@ -82,6 +83,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const processedFileIds: string[] = candidates.map((candidate) => candidate.id);
     let succeeded = 0;
     let failed = 0;
+    const results: Array<{
+      fileId: string;
+      status: EnsureMediaSummaryResult['status'];
+      summaryFile: EnsureMediaSummaryResult['summaryFile'];
+    }> = [];
 
     for (const candidate of candidates) {
       try {
@@ -103,13 +109,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         if (result.status === 'created' || result.status === 'already-exists') {
           succeeded += 1;
+          results.push({
+            fileId: candidate.id,
+            status: result.status,
+            summaryFile: result.summaryFile,
+          });
         }
       } catch (error: any) {
         failed += 1;
         console.error(`${API_NAME} failed to process file ${candidate.id}`, {
           fileId: candidate.id,
           message: error?.message || String(error),
-          geminiError: serializeGeminiError(error instanceof GeminiApiError ? error : null),
+          geminiError: serializeGeminiError(error),
           supabaseError: error instanceof SupabaseActionError ? serializeSupabaseError(error) : null,
         });
       }
@@ -121,6 +132,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       succeeded,
       failed,
       processedFileIds,
+      results,
     });
   } catch (error: any) {
     const status = error instanceof GeminiApiError ? error.status ?? 500 : 500;
