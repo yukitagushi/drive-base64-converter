@@ -535,7 +535,7 @@ function buildChatRequestContents(messages: GeminiChatMessage[]) {
 }
 
 function getDefaultChatModelOrder(): string[] {
-  return ['models/gemini-2.0-flash', 'models/gemini-2.0-pro'];
+  return ['models/gemini-1.5-pro-latest', 'models/gemini-pro', 'models/gemini-1.0-pro'];
 }
 
 export async function generateChatResponse(options: {
@@ -777,13 +777,12 @@ function buildMediaPromptParts({
 }
 
 function getDefaultModelOrder(mimeType?: string | null): string[] {
-  const flash = 'models/gemini-2.0-flash';
-  const pro = 'models/gemini-2.0-pro';
-  if (mimeType && mimeType.startsWith('video/')) {
-    // The Pro models generally provide better temporal reasoning for video.
-    return [pro, flash];
+  const normalized = (mimeType || '').toLowerCase();
+  const mediaDefaults = ['models/gemini-1.5-pro-latest', 'models/gemini-pro-vision'];
+  if (normalized.startsWith('image/') || normalized.startsWith('video/')) {
+    return mediaDefaults;
   }
-  return [flash, pro];
+  return ['models/gemini-1.5-pro-latest', 'models/gemini-pro', 'models/gemini-1.0-pro'];
 }
 
 function shouldRetryModel(error: any): boolean {

@@ -2613,7 +2613,7 @@ function renderFileList(container, files) {
     row.dataset.fileStoreId = file.fileStoreId || '';
     row.dataset.geminiFileName = file.geminiFileName || '';
     row.dataset.displayName = file.displayName || file.name || '';
-    row.dataset.mimeType = file.mimeType || '';
+    row.dataset.mimeType = file.mimeType || file.mime_type || '';
 
     const info = document.createElement('div');
     info.className = 'file-row__info';
@@ -2681,25 +2681,34 @@ function renderFileList(container, files) {
   }
 }
 
-function isImageMimeType(mimeType) {
-  if (!mimeType) {
-    return false;
+function normalizeMimeTypeValue(input) {
+  if (!input) {
+    return '';
   }
-  return String(mimeType).toLowerCase().startsWith('image/');
+  if (typeof input === 'string') {
+    return input;
+  }
+  if (typeof input === 'object') {
+    return input.mimeType || input.mime_type || input.type || '';
+  }
+  return '';
 }
 
-function isVideoMimeType(mimeType) {
-  if (!mimeType) {
-    return false;
-  }
-  return String(mimeType).toLowerCase().startsWith('video/');
+function isImageMimeType(value) {
+  const lower = normalizeMimeTypeValue(value).toLowerCase();
+  return Boolean(lower) && lower.startsWith('image/');
 }
 
-function isMediaMimeType(mimeType) {
-  if (!mimeType) {
+function isVideoMimeType(value) {
+  const lower = normalizeMimeTypeValue(value).toLowerCase();
+  return Boolean(lower) && lower.startsWith('video/');
+}
+
+function isMediaMimeType(value) {
+  const lower = normalizeMimeTypeValue(value).toLowerCase();
+  if (!lower) {
     return false;
   }
-  const lower = String(mimeType).toLowerCase();
   return lower.startsWith('image/') || lower.startsWith('video/') || lower.startsWith('audio/');
 }
 
