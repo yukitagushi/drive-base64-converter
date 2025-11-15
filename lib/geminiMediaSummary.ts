@@ -6,7 +6,7 @@ import {
 } from './gemini';
 
 export const SUMMARY_DESCRIPTION = 'Gemini によるメディア解析テキストです。';
-export const SUMMARY_MIME_TYPE = 'text/plain; charset=utf-8';
+export const SUMMARY_MIME_TYPE = 'text/plain';
 const DEFAULT_STORAGE_BUCKET_CANDIDATES = ['file-store-files', 'gemini-upload-cache'];
 const UNREGISTERED_SENTINELS = new Set(['', 'EMPTY']);
 const DOCUMENT_MIME_PREFIXES = ['text/'];

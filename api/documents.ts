@@ -1237,7 +1237,7 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
         await upload({
           buffer: Buffer.from(summaryText, 'utf8'),
           displayName: summaryName,
-          mimeType: 'text/plain; charset=utf-8',
+          mimeType: 'text/plain',
           extraDescription: 'Gemini によるメディア解析テキストです。',
         });
 
@@ -1286,7 +1286,7 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
         await upload({
           buffer: Buffer.from(summaryText, 'utf8'),
           displayName: summaryName,
-          mimeType: 'text/plain; charset=utf-8',
+          mimeType: 'text/plain',
           extraDescription: 'Gemini によるメディア解析テキストです。',
         });
 

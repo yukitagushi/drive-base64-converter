@@ -189,6 +189,14 @@ function deriveDisplayName(name?: string): string {
   return parts[parts.length - 1] || name;
 }
 
+function sanitizeUploadMimeType(value?: string | null): string {
+  if (!value) {
+    return 'application/octet-stream';
+  }
+  const primary = String(value).split(';')[0]?.trim();
+  return primary || 'application/octet-stream';
+}
+
 function encodePath(value: string): string {
   return String(value)
     .split('/')
@@ -375,14 +383,17 @@ export async function uploadFileToStore(options: {
     throw new Error('アップロードするファイルデータが見つかりません。');
   }
 
+  const sanitizedMimeType = sanitizeUploadMimeType(options.mimeType);
   const storeResource = ensureStoreResourceName(options.storeName, options.displayName);
   const normalizedStoreResource = storeResource.replace(/\/+$/, '');
   const uploadResourcePath = normalizedStoreResource;
 
-  const metadata: Record<string, string> = {};
-  if (options.displayName) {
-    metadata.displayName = options.displayName;
-  }
+  const metadataPayload = {
+    file: {
+      displayName: options.displayName || 'document',
+      mimeType: sanitizedMimeType,
+    },
+  };
   // NOTE: Gemini's upload metadata currently rejects unknown fields such as
   // "description", so we persist descriptions only in Supabase instead of the
   // API payload to avoid 400 Invalid JSON errors.
@@ -392,12 +403,14 @@ export async function uploadFileToStore(options: {
     : options.fileBuffer;
 
   const form = new FormData();
-  if (Object.keys(metadata).length) {
-    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-  }
+  form.append(
+    'metadata',
+    new Blob([JSON.stringify(metadataPayload)], { type: 'application/json; charset=utf-8' }),
+    'metadata.json'
+  );
   form.append(
     'file',
-    new Blob([fileBytes], { type: options.mimeType || 'application/octet-stream' }),
+    new Blob([fileBytes], { type: sanitizedMimeType }),
     options.displayName || 'document'
   );
 
@@ -419,12 +432,14 @@ export async function uploadFileToStore(options: {
   if (!uploadResponse.ok) {
     const message = extractErrorMessage(uploadPayload, 'Gemini へのアップロードに失敗しました。');
     const debugId = extractDebugId(uploadPayload);
+    const payloadError = uploadPayload?.payload?.error || uploadPayload?.error || null;
     console.error('Gemini file upload error', {
       status: uploadResponse.status,
       body: typeof uploadText === 'string' ? uploadText.slice(0, 512) : uploadText,
       debugId,
       storeResource: normalizedStoreResource,
       uploadUrl,
+      payloadError,
     });
 
     if (uploadResponse.status >= 500) {
