@@ -1256,7 +1256,7 @@ async function recordFileWithoutGemini(params: UploadRecordParams): Promise<Norm
     description,
     sizeBytes: params.buffer.length,
     mimeType: params.mimeType,
-    geminiFileName: '',
+    geminiFileName: 'EMPTY',
   });
   record.geminiFileName = '';
   return record;
@@ -1271,13 +1271,13 @@ interface InsertFileRecordParams {
   description: string | null;
   sizeBytes: number;
   mimeType: string;
-  geminiFileName: string;
+  geminiFileName: string | null;
 }
 
 async function insertFileRecord(params: InsertFileRecordParams): Promise<NormalizedFileRecord> {
   const insertPayload = {
     file_store_id: params.storeRow.id,
-    gemini_file_name: params.geminiFileName,
+    gemini_file_name: params.geminiFileName ?? null,
     display_name: params.displayName,
     description: params.description,
     size_bytes: params.sizeBytes,
@@ -1446,8 +1446,14 @@ function createMediaAnalysisSummary(
 }
 
 function normalizeFileRecord(row: any): NormalizedFileRecord {
-  const rawGeminiName = row?.gemini_file_name || '';
-  const normalizedGeminiName = rawGeminiName.startsWith(PENDING_GEMINI_PREFIX) ? '' : rawGeminiName;
+  const rawGeminiName = typeof row?.gemini_file_name === 'string' ? row.gemini_file_name : '';
+  let normalizedGeminiName = rawGeminiName.trim();
+  if (normalizedGeminiName.toUpperCase() === 'EMPTY') {
+    normalizedGeminiName = '';
+  }
+  if (normalizedGeminiName.startsWith(PENDING_GEMINI_PREFIX)) {
+    normalizedGeminiName = '';
+  }
   return {
     id: row?.id || '',
     fileStoreId: row?.file_store_id || '',

@@ -5,9 +5,10 @@ import {
   GeminiApiError,
 } from './gemini';
 
-export const SUMMARY_DESCRIPTION = 'Gemini による画像解析テキストです。';
+export const SUMMARY_DESCRIPTION = 'Gemini によるメディア解析テキストです。';
 export const SUMMARY_MIME_TYPE = 'text/plain; charset=utf-8';
 const DEFAULT_STORAGE_BUCKET_CANDIDATES = ['file-store-files', 'gemini-upload-cache'];
+const UNREGISTERED_SENTINELS = new Set(['', 'EMPTY']);
 
 export interface FileRow {
   id: string;
@@ -20,6 +21,7 @@ export interface FileRow {
   storage_bucket?: string | null;
   storage_path?: string | null;
   storage_object_path?: string | null;
+  uploaded_at?: string | null;
 }
 
 export interface StoreRow {
@@ -34,7 +36,7 @@ export interface SummaryRecord {
   geminiFileName: string | null;
 }
 
-export interface EnsureImageSummaryResult {
+export interface EnsureMediaSummaryResult {
   status: 'already-exists' | 'created';
   summaryName: string;
   summaryFile: SummaryRecord;
@@ -108,6 +110,14 @@ export function isImageMime(mimeType: string | null | undefined): boolean {
   return normalizeMime(mimeType).startsWith('image/');
 }
 
+export function isVideoMime(mimeType: string | null | undefined): boolean {
+  return normalizeMime(mimeType).startsWith('video/');
+}
+
+export function isMediaMime(mimeType: string | null | undefined): boolean {
+  return isImageMime(mimeType) || isVideoMime(mimeType);
+}
+
 function stripExtension(filename: string): string {
   const idx = filename.lastIndexOf('.');
   if (idx <= 0) {
@@ -147,7 +157,7 @@ function createMediaAnalysisSummary(originalName: string, analysis: any): string
     try {
       lines.push('', '---', 'トークン使用量:', JSON.stringify(analysis.usage, null, 2));
     } catch (error) {
-      console.warn('geminiImageSummary failed to stringify usage payload', error);
+      console.warn('geminiMediaSummary failed to stringify usage payload', error);
     }
   }
 
@@ -240,11 +250,36 @@ async function downloadOriginalFile(admin: any, file: FileRow): Promise<Buffer> 
   throw new Error('保存されたファイルを取得できませんでした。');
 }
 
+function isUnregisteredGeminiName(value: string | null | undefined): boolean {
+  const normalized = (value ?? '').trim();
+  if (!normalized) {
+    return true;
+  }
+  return UNREGISTERED_SENTINELS.has(normalized.toUpperCase());
+}
+
+async function markOriginalFileAsProcessed(
+  admin: any,
+  fileId: string,
+  newGeminiName: string | null | undefined,
+): Promise<void> {
+  const candidateValue = (newGeminiName ?? '').trim() || 'SUMMARY_GENERATED';
+  const { error } = await admin
+    .from('file_store_files')
+    .update({ gemini_file_name: candidateValue })
+    .eq('id', fileId)
+    .or('gemini_file_name.is.null,gemini_file_name.eq.,gemini_file_name.eq.EMPTY');
+
+  if (error) {
+    throw new SupabaseActionError('file_store_files', 'update', error);
+  }
+}
+
 export async function fetchFileRow(admin: any, fileId: string): Promise<FileRow | null> {
   const { data, error } = await admin
     .from('file_store_files')
     .select(
-      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, storage_bucket, storage_path, storage_object_path',
+      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, storage_bucket, storage_path, storage_object_path, uploaded_at',
     )
     .eq('id', fileId)
     .maybeSingle();
@@ -340,7 +375,7 @@ async function insertSummaryRecord(
         .eq('id', inserted.id)
         .maybeSingle();
     } catch (readerError) {
-      console.warn('geminiImageSummary failed to refresh user-facing view', readerError);
+      console.warn('geminiMediaSummary failed to refresh user-facing view', readerError);
     }
   }
 
@@ -351,22 +386,26 @@ async function insertSummaryRecord(
   };
 }
 
-export async function ensureImageSummaryForFile(params: {
+export async function ensureMediaSummaryForFile(params: {
   admin: any;
   supabase: any;
   fileRow: FileRow;
   storeRow: StoreRow;
   staffId: string;
-}): Promise<EnsureImageSummaryResult> {
-  if (!isImageMime(params.fileRow.mime_type)) {
-    throw new Error('画像ファイルのみ処理できます。');
+}): Promise<EnsureMediaSummaryResult> {
+  if (!isMediaMime(params.fileRow.mime_type)) {
+    throw new Error('画像または動画ファイルのみ処理できます。');
   }
 
-  const baseName = stripExtension(params.fileRow.display_name || 'image') || 'image';
+  const baseName = stripExtension(params.fileRow.display_name || 'media') || 'media';
   const summaryName = `${baseName}-analysis.txt`;
 
   const existingSummary = await findExistingSummary(params.admin, params.fileRow.file_store_id, summaryName);
   if (existingSummary) {
+    if (isUnregisteredGeminiName(params.fileRow.gemini_file_name)) {
+      await markOriginalFileAsProcessed(params.admin, params.fileRow.id, existingSummary.geminiFileName);
+      params.fileRow.gemini_file_name = existingSummary.geminiFileName ?? params.fileRow.gemini_file_name;
+    }
     return {
       status: 'already-exists',
       summaryName,
@@ -403,9 +442,25 @@ export async function ensureImageSummaryForFile(params: {
     staffId: params.staffId,
   });
 
+  await markOriginalFileAsProcessed(params.admin, params.fileRow.id, summaryRecord.geminiFileName || uploadResult.geminiFileName);
+  params.fileRow.gemini_file_name = summaryRecord.geminiFileName || uploadResult.geminiFileName || params.fileRow.gemini_file_name;
+
   return {
     status: 'created',
     summaryName,
     summaryFile: summaryRecord,
   };
+}
+
+export async function ensureImageSummaryForFile(params: {
+  admin: any;
+  supabase: any;
+  fileRow: FileRow;
+  storeRow: StoreRow;
+  staffId: string;
+}): Promise<EnsureMediaSummaryResult> {
+  if (!isImageMime(params.fileRow.mime_type)) {
+    throw new Error('画像ファイルのみ処理できます。');
+  }
+  return ensureMediaSummaryForFile(params);
 }

@@ -7,7 +7,7 @@ import {
   serializeGeminiError,
   serializeSupabaseError,
   SupabaseActionError,
-} from '../lib/geminiImageSummary';
+} from '../lib/geminiMediaSummary';
 import { GeminiApiError } from '../lib/gemini';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
 import { getSupabaseBearerToken, resolveStaffForRequest } from '../lib/api-auth';

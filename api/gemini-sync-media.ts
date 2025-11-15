@@ -1,19 +1,19 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { GeminiApiError } from '../lib/gemini';
 import {
-  ensureImageSummaryForFile,
+  ensureMediaSummaryForFile,
   FileRow,
   StoreRow,
-  isImageMime,
+  isMediaMime,
   serializeGeminiError,
   serializeSupabaseError,
   SupabaseActionError,
-} from '../lib/geminiImageSummary';
+} from '../lib/geminiMediaSummary';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
 import { getSupabaseBearerToken, resolveStaffForRequest } from '../lib/api-auth';
 import { getSupabaseClientWithToken } from '../lib/supabaseClient';
 
-const API_NAME = '/api/gemini-sync-images';
+const API_NAME = '/api/gemini-sync-media';
 const SYNC_LIMIT = 10;
 
 interface SyncCandidate extends FileRow {
@@ -79,7 +79,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const candidates = await fetchSyncCandidates(admin, staff.officeId, SYNC_LIMIT);
-    const fileIds: string[] = candidates.map((candidate) => candidate.id);
+    const processedFileIds: string[] = candidates.map((candidate) => candidate.id);
     let succeeded = 0;
     let failed = 0;
 
@@ -89,11 +89,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           throw new Error('ファイルストア情報が見つかりません。');
         }
 
-        if (!isImageMime(candidate.mime_type)) {
-          throw new Error('画像ファイルのみ処理できます。');
+        if (!isMediaMime(candidate.mime_type)) {
+          throw new Error('画像または動画ファイルのみ処理できます。');
         }
 
-        const result = await ensureImageSummaryForFile({
+        const result = await ensureMediaSummaryForFile({
           admin,
           supabase,
           fileRow: candidate,
@@ -117,17 +117,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     respond(res, 200, {
       success: true,
-      processedCount: fileIds.length,
+      processedCount: processedFileIds.length,
       succeeded,
       failed,
-      fileIds,
+      processedFileIds,
     });
   } catch (error: any) {
     const status = error instanceof GeminiApiError ? error.status ?? 500 : 500;
     console.error(`${API_NAME} error:`, error);
     respond(res, status, {
-      error: 'sync_images_failed',
-      message: error?.message || '画像解析テキストの同期に失敗しました。',
+      error: 'sync_media_failed',
+      message: error?.message || 'メディア解析テキストの同期に失敗しました。',
       geminiError: serializeGeminiError(error instanceof GeminiApiError ? error : null),
       supabaseError: error instanceof SupabaseActionError ? serializeSupabaseError(error) : null,
     });
@@ -145,6 +145,7 @@ async function fetchSyncCandidates(admin: any, officeId: string, limit: number):
        description,
        size_bytes,
        mime_type,
+       uploaded_at,
        storage_bucket,
        storage_path,
        storage_object_path,
@@ -154,9 +155,10 @@ async function fetchSyncCandidates(admin: any, officeId: string, limit: number):
          office_id
        )`,
     )
-    .or('gemini_file_name.is.null,gemini_file_name.eq.')
-    .ilike('mime_type', 'image/%')
+    .or('gemini_file_name.is.null,gemini_file_name.eq.,gemini_file_name.eq.EMPTY')
+    .or('mime_type.ilike.image/%,mime_type.ilike.video/%')
     .eq('file_stores.office_id', officeId)
+    .order('uploaded_at', { ascending: false, nullsFirst: false })
     .limit(limit);
 
   if (error) {
