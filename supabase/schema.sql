@@ -55,6 +55,9 @@ create table if not exists file_store_files (
   description text,
   size_bytes bigint,
   mime_type text,
+  storage_bucket text,
+  storage_path text,
+  storage_object_path text,
   uploaded_by uuid references staff_profiles(id),
   uploaded_at timestamptz not null default timezone('utc', now())
 );
