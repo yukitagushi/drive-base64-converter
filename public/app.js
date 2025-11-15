@@ -273,6 +273,7 @@ let isSending = false;
 let storeCache = [];
 const storeFilesCache = new Map();
 const imageSummaryRequestState = new Map();
+const videoSummaryRequestState = new Map();
 const storeSyncRequestState = new Map();
 
 let supabaseBrowserClient = null;
@@ -2648,6 +2649,22 @@ function renderFileList(container, files) {
       actions.appendChild(summarizeBtn);
     }
 
+    if (isVideoMimeType(file.mimeType)) {
+      // 動画解析ボタン: Gemini 動画サマリ API を起動する
+      const summarizeVideoBtn = document.createElement('button');
+      summarizeVideoBtn.type = 'button';
+      summarizeVideoBtn.className = 'btn btn-ghost btn-compact';
+      summarizeVideoBtn.dataset.action = 'register-video-summary';
+      const isVideoAnalyzing = Boolean(file.id && videoSummaryRequestState.get(file.id));
+      summarizeVideoBtn.textContent = isVideoAnalyzing ? '動画解析中…' : '動画解析';
+      summarizeVideoBtn.title = 'Gemini で動画を解析してテキスト化します';
+      if (isVideoAnalyzing) {
+        summarizeVideoBtn.disabled = true;
+        summarizeVideoBtn.dataset.loading = '1';
+      }
+      actions.appendChild(summarizeVideoBtn);
+    }
+
     if (file.geminiFileName) {
       const analyzeBtn = document.createElement('button');
       analyzeBtn.type = 'button';
@@ -2669,6 +2686,13 @@ function isImageMimeType(mimeType) {
     return false;
   }
   return String(mimeType).toLowerCase().startsWith('image/');
+}
+
+function isVideoMimeType(mimeType) {
+  if (!mimeType) {
+    return false;
+  }
+  return String(mimeType).toLowerCase().startsWith('video/');
 }
 
 function isMediaMimeType(mimeType) {
@@ -2699,6 +2723,18 @@ async function onStoreFileAction(event) {
 
   if (button.dataset.action === 'register-image-summary') {
     registerImageSummary({
+      button,
+      container,
+      displayName,
+      fileId,
+      mimeType,
+      storeId,
+    });
+    return;
+  }
+
+  if (button.dataset.action === 'register-video-summary') {
+    registerVideoSummary({
       button,
       container,
       displayName,
@@ -2770,6 +2806,65 @@ function registerImageSummary({ button, container, displayName, fileId, mimeType
         button.disabled = false;
         delete button.dataset.loading;
         button.textContent = '画像解析';
+      }
+    });
+}
+
+function registerVideoSummary({ button, container, displayName, fileId, mimeType, storeId }) {
+  if (!ensureAuthenticated({ message: '動画を解析するにはログインしてください。' })) {
+    return;
+  }
+
+  if (!fileId) {
+    console.error('動画解析テキスト登録に必要なファイル ID が見つかりません。');
+    return;
+  }
+
+  if (!isVideoMimeType(mimeType)) {
+    showToast('動画ファイルのみ解析できます。', { type: 'error' });
+    return;
+  }
+
+  if (videoSummaryRequestState.get(fileId)) {
+    return;
+  }
+
+  videoSummaryRequestState.set(fileId, true);
+  if (button) {
+    button.disabled = true;
+    button.dataset.loading = '1';
+    button.textContent = '動画解析中…';
+  }
+
+  safeFetch('/api/gemini-register-video-summary', {
+    method: 'POST',
+    body: JSON.stringify({ fileId }),
+  })
+    .then((response) => {
+      console.log('register-video-summary response:', response);
+
+      const alreadyProcessed = Boolean(response?.alreadyProcessed);
+      if (alreadyProcessed) {
+        showToast('この動画はすでに解析済みです。');
+      } else if (response?.success) {
+        showToast('動画解析テキストを登録しました。');
+      } else {
+        showToast('動画解析の結果を受信しました。');
+      }
+    })
+    .catch((error) => {
+      console.error('動画解析テキストの登録に失敗しました:', error);
+      if (error?.body) {
+        console.error('register-video-summary error body:', error.body);
+      }
+      showToast('動画解析に失敗しました。', { type: 'error' });
+    })
+    .finally(() => {
+      videoSummaryRequestState.delete(fileId);
+      if (button) {
+        button.disabled = false;
+        delete button.dataset.loading;
+        button.textContent = '動画解析';
       }
     });
 }
