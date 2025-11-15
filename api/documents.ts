@@ -84,23 +84,31 @@ const TEXTUAL_EXTENSIONS = new Set([
   'cs',
   'sql',
   'log',
+  'rtf',
 ]);
 
 const TEXTUAL_MIME_HINTS = new Set([
   'application/json',
   'application/ld+json',
   'application/xml',
+  'text/xml',
   'application/xhtml+xml',
+  'text/html',
+  'text/plain',
   'application/javascript',
   'application/x-javascript',
   'application/typescript',
   'application/x-typescript',
+  'text/markdown',
   'application/yaml',
   'application/x-yaml',
   'application/x-sh',
   'application/sql',
+  'text/csv',
+  'text/tab-separated-values',
   'application/csv',
   'application/vnd.ms-excel',
+  'application/rtf',
 ]);
 
 const IMAGE_PREFIX = 'image/';
@@ -114,7 +122,29 @@ const GENERIC_MIME_TYPES = new Set([
   'unknown/unknown',
 ]);
 
+// Representative extension to MIME mappings for common office/media formats.
 const EXTENSION_MIME_MAP = new Map<string, string>([
+  ['pdf', 'application/pdf'],
+  ['doc', 'application/msword'],
+  ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['rtf', 'application/rtf'],
+  ['ppt', 'application/vnd.ms-powerpoint'],
+  ['pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  ['xls', 'application/vnd.ms-excel'],
+  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ['xlsm', 'application/vnd.ms-excel.sheet.macroenabled.12'],
+  ['xlsb', 'application/vnd.ms-excel.sheet.binary.macroenabled.12'],
+  ['csv', 'text/csv'],
+  ['tsv', 'text/tab-separated-values'],
+  ['txt', 'text/plain'],
+  ['md', 'text/markdown'],
+  ['markdown', 'text/markdown'],
+  ['json', 'application/json'],
+  ['xml', 'application/xml'],
+  ['htm', 'text/html'],
+  ['html', 'text/html'],
+  ['yaml', 'application/x-yaml'],
+  ['yml', 'application/x-yaml'],
   ['jpg', 'image/jpeg'],
   ['jpeg', 'image/jpeg'],
   ['png', 'image/png'],
@@ -126,6 +156,9 @@ const EXTENSION_MIME_MAP = new Map<string, string>([
   ['heic', 'image/heic'],
   ['heif', 'image/heif'],
   ['avif', 'image/avif'],
+  ['mp3', 'audio/mpeg'],
+  ['wav', 'audio/wav'],
+  ['m4a', 'audio/mp4'],
   ['mp4', 'video/mp4'],
   ['m4v', 'video/mp4'],
   ['mov', 'video/quicktime'],
@@ -141,6 +174,7 @@ const EXTENSION_MIME_MAP = new Map<string, string>([
   ['zip', 'application/zip'],
 ]);
 
+// File types we currently keep only in Supabase storage without Gemini ingestion.
 const STORE_ONLY_MIME_TYPES = new Set([
   'application/zip',
   'application/x-zip-compressed',
@@ -149,9 +183,25 @@ const STORE_ONLY_MIME_TYPES = new Set([
   'application/vnd.ms-excel',
   'application/vnd.ms-excel.sheet.macroenabled.12',
   'application/vnd.ms-excel.sheet.binary.macroenabled.12',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/rtf',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ]);
 
-const STORE_ONLY_EXTENSIONS = new Set(['zip', 'xlsx', 'xls', 'xlsm', 'xlsb']);
+const STORE_ONLY_EXTENSIONS = new Set([
+  'zip',
+  'xlsx',
+  'xls',
+  'xlsm',
+  'xlsb',
+  'doc',
+  'docx',
+  'rtf',
+  'ppt',
+  'pptx',
+]);
 
 const GEMINI_STORE_FAILURE_NOTE = 'Gemini File Search 登録に失敗しましたが、ファイルは保存されました。';
 const GEMINI_ANALYSIS_FAILURE_NOTE = 'Gemini 解析に失敗しましたが、ファイルは保存しました。';

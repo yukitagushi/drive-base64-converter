@@ -87,6 +87,82 @@ let googleHint;
 
 let toastContainer;
 
+const SUPPORTED_UPLOAD_ACCEPT = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/rtf',
+  'text/plain',
+  'text/markdown',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel.sheet.macroenabled.12',
+  'application/vnd.ms-excel.sheet.binary.macroenabled.12',
+  'text/csv',
+  'text/tab-separated-values',
+  'application/csv',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/json',
+  'application/xml',
+  'text/xml',
+  'text/html',
+  'application/xhtml+xml',
+  'image/*',
+  'video/*',
+  'audio/*',
+  'application/zip',
+  'application/x-zip-compressed',
+  'multipart/x-zip',
+  'audio/mpeg',
+  'audio/wav',
+  'audio/mp4',
+  '.pdf',
+  '.doc',
+  '.docx',
+  '.rtf',
+  '.txt',
+  '.md',
+  '.markdown',
+  '.xls',
+  '.xlsx',
+  '.xlsm',
+  '.xlsb',
+  '.csv',
+  '.tsv',
+  '.ppt',
+  '.pptx',
+  '.json',
+  '.xml',
+  '.html',
+  '.htm',
+  '.yaml',
+  '.yml',
+  '.zip',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.bmp',
+  '.webp',
+  '.tif',
+  '.tiff',
+  '.heic',
+  '.heif',
+  '.avif',
+  '.mp4',
+  '.m4v',
+  '.mov',
+  '.avi',
+  '.webm',
+  '.mkv',
+  '.3gp',
+  '.3g2',
+  '.mp3',
+  '.wav',
+  '.m4a',
+].join(',');
+
 let publicSupabaseConfig = null;
 
 class HttpError extends Error {
@@ -141,6 +217,9 @@ function cacheDomElements() {
   uploadDialog = document.getElementById('upload-dialog');
   uploadForm = document.getElementById('upload-form');
   uploadFileInput = document.getElementById('upload-file');
+  if (uploadFileInput) {
+    uploadFileInput.setAttribute('accept', SUPPORTED_UPLOAD_ACCEPT);
+  }
   uploadSummary = document.getElementById('upload-summary');
   uploadStoreSelect = document.getElementById('upload-store');
   uploadNotesInput = document.getElementById('upload-notes');
