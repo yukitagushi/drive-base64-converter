@@ -230,6 +230,7 @@ let isSending = false;
 let storeCache = [];
 const storeFilesCache = new Map();
 const imageSummaryRequestState = new Map();
+const storeSyncRequestState = new Map();
 
 let supabaseBrowserClient = null;
 let supabaseClientSignature = null;
@@ -2154,12 +2155,18 @@ function renderStores() {
     const title = document.createElement('h4');
     title.className = 'store-title';
     title.textContent = store.displayName || store.geminiStoreName;
+    const syncBtn = document.createElement('button');
+    syncBtn.type = 'button';
+    syncBtn.className = 'btn btn-chip';
+    syncBtn.dataset.action = 'sync-pending';
+    syncBtn.textContent = '未登録ファイルを更新';
     const action = document.createElement('button');
     action.type = 'button';
     action.className = 'btn btn-chip';
     action.dataset.action = 'toggle-files';
     action.textContent = 'ファイル一覧';
     header.appendChild(title);
+    header.appendChild(syncBtn);
     header.appendChild(action);
 
     const meta = document.createElement('div');
@@ -2425,6 +2432,11 @@ async function onStoreListClick(event) {
   const storeId = card.dataset.storeId;
   if (!storeId) return;
 
+  if (button.dataset.action === 'sync-pending') {
+    await syncPendingFiles({ button, card, storeId });
+    return;
+  }
+
   if (button.dataset.action === 'toggle-files') {
     await toggleStoreFiles(card, button, storeId);
   }
@@ -2472,6 +2484,74 @@ async function toggleStoreFiles(card, button, storeId) {
     button.textContent = '再読み込み';
   } finally {
     button.disabled = false;
+  }
+}
+
+async function syncPendingFiles({ button, card, storeId }) {
+  if (!ensureAuthenticated({ message: '未登録ファイルを同期するにはログインしてください。' })) {
+    return;
+  }
+
+  if (!storeId) {
+    console.error('同期対象のストア ID が見つかりません。');
+    return;
+  }
+
+  if (storeSyncRequestState.get(storeId)) {
+    return;
+  }
+
+  const originalText = button.textContent;
+  storeSyncRequestState.set(storeId, true);
+  button.disabled = true;
+  button.textContent = '同期中...';
+
+  try {
+    const response = await safeFetch('/api/gemini-sync-pending', {
+      method: 'POST',
+      body: JSON.stringify({ fileStoreId: storeId }),
+    });
+
+    console.log('gemini-sync-pending response:', response);
+
+    if (response?.success) {
+      const processed = Number(response.processedCount || 0);
+      const succeeded = Number(response.succeeded || 0);
+      const failed = Number(response.failed || 0);
+      const summaryMessage = `同期完了: ${succeeded}/${processed} 件成功 (${failed} 件失敗)`;
+      showToast(summaryMessage, { type: failed > 0 ? 'warning' : 'success' });
+    } else {
+      console.error('未登録ファイルの同期が失敗しました:', response);
+      showToast('未登録ファイルの同期に失敗しました。', { type: 'error' });
+    }
+
+    const filesContainer = card.querySelector('.store-files');
+    if (response?.success && filesContainer) {
+      if (filesContainer.hidden) {
+        storeFilesCache.delete(storeId);
+      } else {
+        try {
+          const refreshed = await safeFetch(`/api/documents?fileStoreId=${encodeURIComponent(storeId)}`);
+          const rawFiles = Array.isArray(refreshed.items)
+            ? refreshed.items
+            : Array.isArray(refreshed.files)
+            ? refreshed.files
+            : [];
+          const normalized = rawFiles.map((row) => normalizeFileRow(row));
+          storeFilesCache.set(storeId, normalized);
+          renderFileList(filesContainer, normalized);
+        } catch (refreshError) {
+          console.error('同期後のファイル一覧更新に失敗しました:', refreshError);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('未登録ファイルの同期リクエストに失敗しました:', error);
+    showToast('未登録ファイルの同期に失敗しました。', { type: 'error' });
+  } finally {
+    storeSyncRequestState.delete(storeId);
+    button.disabled = false;
+    button.textContent = originalText;
   }
 }
 
