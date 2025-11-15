@@ -8,7 +8,6 @@ import {
   ensureMediaSummaryForFile,
   fetchStoreRow,
   isDocumentMime,
-  isMediaMime,
   serializeGeminiError,
   serializeSupabaseError,
   SupabaseActionError,
@@ -27,6 +26,32 @@ interface SyncResult {
   summaryFile?: EnsureMediaSummaryResult['summaryFile'];
   geminiFileName?: string | null;
   reason?: string;
+}
+
+function normalizeMime(value: string | null | undefined): string {
+  return (value || '').split(';')[0]?.trim().toLowerCase() || '';
+}
+
+function classifySkipReason(mimeType: string): string {
+  if (!mimeType) {
+    return 'missing_mime';
+  }
+  if (mimeType.startsWith('application/zip') || mimeType === 'multipart/x-zip') {
+    return 'zip_archive';
+  }
+  if (mimeType.startsWith('audio/')) {
+    return 'audio_pending_support';
+  }
+  if (
+    mimeType === 'application/vnd.ms-powerpoint' ||
+    mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+    mimeType === 'application/msword' ||
+    mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    mimeType === 'application/rtf'
+  ) {
+    return 'bypassed_non_text';
+  }
+  return 'unsupported_mime';
 }
 
 function applyCors(req: VercelRequest, res: VercelResponse) {
@@ -151,7 +176,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     for (const candidate of candidates) {
       try {
-        if (isMediaMime(candidate.mime_type)) {
+        const normalizedMime = normalizeMime(candidate.mime_type);
+        const isImage = normalizedMime.startsWith('image/');
+        const isVideo = normalizedMime.startsWith('video/');
+
+        if (isImage) {
+          const mediaResult = await ensureMediaSummaryForFile({
+            admin,
+            supabase,
+            fileRow: candidate,
+            storeRow,
+            staffId: staff.id,
+          });
+          results.push({
+            fileId: candidate.id,
+            action: 'media-summary',
+            status: mediaResult.status === 'already-exists' ? 'already' : 'success',
+            summaryFile: mediaResult.summaryFile,
+          });
+          succeeded += 1;
+          continue;
+        }
+
+        if (isVideo) {
           const mediaResult = await ensureMediaSummaryForFile({
             admin,
             supabase,
@@ -185,15 +232,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           continue;
         }
 
+        const skipReason = classifySkipReason(normalizedMime);
         console.warn(`${API_NAME} skipping unsupported mime`, {
           fileId: candidate.id,
           mimeType: candidate.mime_type,
+          reason: skipReason,
         });
         results.push({
           fileId: candidate.id,
           action: 'skipped',
           status: 'skipped',
-          reason: 'unsupported_mime',
+          reason: skipReason,
         });
       } catch (error: any) {
         failed += 1;
