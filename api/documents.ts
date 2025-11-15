@@ -49,6 +49,7 @@ class SupabaseActionError extends Error {
 }
 
 const DEFAULT_UPLOAD_BUCKET = 'gemini-upload-cache';
+const PERMANENT_STORAGE_BUCKET = 'file-store-files';
 const MAX_UPLOAD_BYTES = 60 * 1024 * 1024; // 60MB safety cap for server-side processing
 const MAX_ZIP_EXTRACT_FILES = 200;
 const MAX_ZIP_EXTRACT_BYTES = 50 * 1024 * 1024; // avoid exploding archives on the server
@@ -505,6 +506,52 @@ function sanitizeZipEntryDisplayName(name: string, fallbackIndex: number, extens
     candidate = `${candidate}.${extension}`;
   }
   return candidate || `extracted-file-${fallbackIndex + 1}`;
+}
+
+function sanitizeStorageFileName(name: string): string {
+  const normalized = String(name || '')
+    .replace(/^[\\/]+/, '')
+    .replace(/[\\]+/g, '/');
+  const segments = normalized.split('/');
+  const lastSegment = segments[segments.length - 1] || 'file';
+  const cleaned = lastSegment.replace(/[^a-zA-Z0-9._-]+/g, '_').trim();
+  const truncated = cleaned.slice(-160);
+  return truncated || 'file';
+}
+
+function createStorageObjectPath(storeId: string, displayName: string): string {
+  const safeStoreId = String(storeId || 'store').replace(/[^a-zA-Z0-9_-]+/g, '_');
+  const safeName = sanitizeStorageFileName(displayName);
+  const timePart = Date.now().toString(36);
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `${safeStoreId}/${timePart}-${randomPart}-${safeName}`;
+}
+
+async function persistBufferToStorage(params: {
+  admin: ReturnType<typeof getSupabaseAdmin>;
+  buffer: Buffer;
+  storeId: string;
+  displayName: string;
+  mimeType: string;
+  storageBucket?: string | null;
+  storagePath?: string | null;
+}): Promise<{ bucket: string; path: string }> {
+  const bucket = (params.storageBucket || '').trim() || PERMANENT_STORAGE_BUCKET;
+  const path = (params.storagePath || '').trim() || createStorageObjectPath(params.storeId, params.displayName);
+
+  await ensureStorageBucket({ bucket, admin: params.admin, sizeLimitBytes: MAX_UPLOAD_BYTES });
+
+  const { error } = await params.admin.storage.from(bucket).upload(path, params.buffer, {
+    upsert: true,
+    cacheControl: '3600',
+    contentType: params.mimeType || 'application/octet-stream',
+  });
+
+  if (error) {
+    throw new SupabaseActionError('storage', 'upload', error);
+  }
+
+  return { bucket, path };
 }
 
 function appendDescription(base: string | null, extra: string | null): string | null {
@@ -985,27 +1032,20 @@ async function handleJsonUpload(
   const memo = payload.memo || payload.description || '';
   const displayName = payload.displayName || payload.filename || 'document';
   const mimeType = payload.mimeType || payload.contentType || 'application/octet-stream';
-  let outcome: UploadOutcome;
-  try {
-    outcome = await processUploadBuffer({
-      admin: context.admin,
-      supabase: context.supabase,
-      staffId: context.staff.id,
-      storeRow,
-      fileBuffer,
-      originalFilename: displayName,
-      displayName,
-      mimeType,
-      memo,
-      onMimeResolved: context.onMimeResolved,
-    });
-  } finally {
-    try {
-      await context.admin.storage.from(bucket).remove([path]);
-    } catch (cleanupError: any) {
-      console.warn('Failed to clean up staged upload:', cleanupError?.message || cleanupError);
-    }
-  }
+  const outcome = await processUploadBuffer({
+    admin: context.admin,
+    supabase: context.supabase,
+    staffId: context.staff.id,
+    storeRow,
+    fileBuffer,
+    originalFilename: displayName,
+    displayName,
+    mimeType,
+    memo,
+    storageBucket: bucket,
+    storagePath: path,
+    onMimeResolved: context.onMimeResolved,
+  });
 
   return outcome;
 }
@@ -1020,6 +1060,8 @@ interface UploadBufferContext {
   displayName: string;
   mimeType: string;
   memo: string;
+  storageBucket?: string | null;
+  storagePath?: string | null;
   onMimeResolved?: (mime: string) => void;
 }
 
@@ -1033,6 +1075,9 @@ interface UploadRecordParams {
   displayName: string;
   mimeType: string;
   extraDescription?: string | null;
+  storageBucket?: string | null;
+  storagePath?: string | null;
+  persistToStorage?: boolean;
 }
 
 async function processUploadBuffer(context: UploadBufferContext): Promise<UploadOutcome> {
@@ -1060,6 +1105,9 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
     displayName: string;
     mimeType: string;
     extraDescription?: string | null;
+    storageBucket?: string | null;
+    storagePath?: string | null;
+    persistToStorage?: boolean;
   }) => {
     const result = await uploadAndRecordGeminiFile({
       admin: context.admin,
@@ -1071,6 +1119,9 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       displayName: params.displayName,
       mimeType: params.mimeType,
       extraDescription: params.extraDescription || null,
+      storageBucket: params.storageBucket,
+      storagePath: params.storagePath,
+      persistToStorage: params.persistToStorage,
     });
     items.push(result.record);
     gemini.push(result.gemini);
@@ -1091,6 +1142,9 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       displayName: context.displayName,
       mimeType: normalizedMime,
       extraDescription: null,
+      storageBucket: context.storageBucket,
+      storagePath: context.storagePath,
+      persistToStorage: !(context.storageBucket && context.storagePath),
     });
     items.push(originalRecord);
 
@@ -1147,6 +1201,9 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       buffer: context.fileBuffer,
       displayName: context.displayName,
       mimeType: normalizedMime,
+      storageBucket: context.storageBucket,
+      storagePath: context.storagePath,
+      persistToStorage: !(context.storageBucket && context.storagePath),
     });
     const canAnalyzeStored = Boolean(
       original.gemini.registered && original.gemini.geminiFileName && original.gemini.geminiFileUri
@@ -1194,6 +1251,9 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       buffer: context.fileBuffer,
       displayName: context.displayName,
       mimeType: normalizedMime,
+      storageBucket: context.storageBucket,
+      storagePath: context.storagePath,
+      persistToStorage: !(context.storageBucket && context.storagePath),
     });
     const canAnalyzeStored = Boolean(
       original.gemini.registered && original.gemini.geminiFileName && original.gemini.geminiFileUri
@@ -1240,6 +1300,9 @@ async function processUploadBuffer(context: UploadBufferContext): Promise<Upload
       buffer: context.fileBuffer,
       displayName: context.displayName,
       mimeType: normalizedMime,
+      storageBucket: context.storageBucket,
+      storagePath: context.storagePath,
+      persistToStorage: !(context.storageBucket && context.storagePath),
     });
     if (shouldBypassMediaEnrichment && (isZipType(normalizedMime, extension) || STORE_ONLY_EXTENSIONS.has(extension))) {
       pushNote('Gemini File Search 用にファイルをそのまま保存しました。');
@@ -1254,6 +1317,28 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
   gemini: GeminiFileUploadResult;
 }> {
   const description = appendDescription(params.baseDescription, params.extraDescription || null);
+  let storageBucket = params.storageBucket ?? null;
+  let storagePath = params.storagePath ?? null;
+  let shouldPersist = params.persistToStorage !== false;
+
+  if (!shouldPersist && (!storageBucket || !storagePath)) {
+    shouldPersist = true;
+  }
+
+  if (shouldPersist) {
+    const persisted = await persistBufferToStorage({
+      admin: params.admin,
+      buffer: params.buffer,
+      storeId: params.storeRow.id,
+      displayName: params.displayName,
+      mimeType: params.mimeType,
+      storageBucket,
+      storagePath,
+    });
+    storageBucket = persisted.bucket;
+    storagePath = persisted.path;
+  }
+
   const uploadResult = await uploadFileToStore({
     storeName: params.storeRow.gemini_store_name,
     fileBuffer: params.buffer,
@@ -1286,6 +1371,8 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
     sizeBytes: uploadResult.sizeBytes || params.buffer.length,
     mimeType: uploadResult.mimeType || params.mimeType,
     geminiFileName: storedGeminiFileName,
+    storageBucket,
+    storagePath,
   });
 
   if (placeholderUsed) {
@@ -1297,6 +1384,28 @@ async function uploadAndRecordGeminiFile(params: UploadRecordParams): Promise<{
 
 async function recordFileWithoutGemini(params: UploadRecordParams): Promise<NormalizedFileRecord> {
   const description = appendDescription(params.baseDescription, params.extraDescription || null);
+  let storageBucket = params.storageBucket ?? null;
+  let storagePath = params.storagePath ?? null;
+  let shouldPersist = params.persistToStorage !== false;
+
+  if (!shouldPersist && (!storageBucket || !storagePath)) {
+    shouldPersist = true;
+  }
+
+  if (shouldPersist) {
+    const persisted = await persistBufferToStorage({
+      admin: params.admin,
+      buffer: params.buffer,
+      storeId: params.storeRow.id,
+      displayName: params.displayName,
+      mimeType: params.mimeType,
+      storageBucket,
+      storagePath,
+    });
+    storageBucket = persisted.bucket;
+    storagePath = persisted.path;
+  }
+
   const record = await insertFileRecord({
     admin: params.admin,
     supabase: params.supabase,
@@ -1307,6 +1416,8 @@ async function recordFileWithoutGemini(params: UploadRecordParams): Promise<Norm
     sizeBytes: params.buffer.length,
     mimeType: params.mimeType,
     geminiFileName: 'EMPTY',
+    storageBucket,
+    storagePath,
   });
   record.geminiFileName = '';
   return record;
@@ -1322,6 +1433,9 @@ interface InsertFileRecordParams {
   sizeBytes: number;
   mimeType: string;
   geminiFileName: string | null;
+  storageBucket?: string | null;
+  storagePath?: string | null;
+  storageObjectPath?: string | null;
 }
 
 async function insertFileRecord(params: InsertFileRecordParams): Promise<NormalizedFileRecord> {
@@ -1333,13 +1447,16 @@ async function insertFileRecord(params: InsertFileRecordParams): Promise<Normali
     size_bytes: params.sizeBytes,
     mime_type: params.mimeType,
     uploaded_by: params.staffId,
+    storage_bucket: params.storageBucket ?? null,
+    storage_path: params.storagePath ?? null,
+    storage_object_path: params.storageObjectPath ?? params.storagePath ?? null,
   };
 
   const { data: adminInserted, error: adminInsertError } = await params.admin
     .from('file_store_files')
     .insert(insertPayload)
     .select(
-      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at'
+      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at, storage_bucket, storage_path, storage_object_path'
     )
     .single();
 
@@ -1355,7 +1472,7 @@ async function insertFileRecord(params: InsertFileRecordParams): Promise<Normali
   const { data: readerRow, error: readerError } = await params.supabase
     .from('file_store_files')
     .select(
-      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at'
+      'id, file_store_id, gemini_file_name, display_name, description, size_bytes, mime_type, uploaded_by, uploaded_at, storage_bucket, storage_path, storage_object_path'
     )
     .eq('id', adminInserted.id)
     .maybeSingle();

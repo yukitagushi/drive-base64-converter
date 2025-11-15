@@ -242,16 +242,51 @@ function buildStoragePathCandidates(file: FileRow): string[] {
 }
 
 export async function downloadOriginalFile(admin: any, file: FileRow): Promise<Buffer> {
+  const directBucket = (file.storage_bucket || '').trim();
+  const directPath = (file.storage_path || '').trim();
+  const primaryBucket = directBucket || DEFAULT_STORAGE_BUCKET_CANDIDATES[0];
+
+  if (directPath) {
+    try {
+      const directResponse = await admin.storage.from(primaryBucket).download(directPath);
+      if (!directResponse.error && directResponse.data) {
+        const directBuffer = await bufferFromUnknown(directResponse.data);
+        if (directBuffer.length) {
+          return directBuffer;
+        }
+        console.warn('downloadOriginalFile: direct download returned empty buffer', {
+          bucket: primaryBucket,
+          path: directPath,
+        });
+      } else if (directResponse.error) {
+        console.warn('downloadOriginalFile: direct download error', {
+          bucket: primaryBucket,
+          path: directPath,
+          error: directResponse.error?.message || null,
+        });
+      }
+    } catch (error: any) {
+      console.warn('downloadOriginalFile: direct download threw', {
+        bucket: primaryBucket,
+        path: directPath,
+        error: error?.message || error,
+      });
+    }
+  }
+
   const pathCandidates = buildStoragePathCandidates(file);
   const bucketCandidates = new Set<string>();
 
-  if (file.storage_bucket) {
-    bucketCandidates.add(String(file.storage_bucket));
+  if (directBucket) {
+    bucketCandidates.add(directBucket);
   }
   DEFAULT_STORAGE_BUCKET_CANDIDATES.forEach((bucket) => bucketCandidates.add(bucket));
 
   for (const bucket of bucketCandidates) {
     for (const path of pathCandidates) {
+      if (directPath && bucket === primaryBucket && path === directPath) {
+        continue;
+      }
       try {
         const response = await admin.storage.from(bucket).download(path);
         if (response.error) {
@@ -259,9 +294,15 @@ export async function downloadOriginalFile(admin: any, file: FileRow): Promise<B
         }
         const buffer = await bufferFromUnknown(response.data);
         if (buffer.length) {
+          console.info('downloadOriginalFile: fallback candidate succeeded', { bucket, path });
           return buffer;
         }
-      } catch (error) {
+      } catch (error: any) {
+        console.warn('downloadOriginalFile: fallback download failed', {
+          bucket,
+          path,
+          error: error?.message || error,
+        });
         continue;
       }
     }
