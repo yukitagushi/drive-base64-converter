@@ -2638,10 +2638,12 @@ function renderFileList(container, files) {
       summarizeBtn.type = 'button';
       summarizeBtn.className = 'btn btn-ghost btn-compact';
       summarizeBtn.dataset.action = 'register-image-summary';
-      summarizeBtn.textContent = '画像解析';
+      const isAnalyzing = Boolean(file.id && imageSummaryRequestState.get(file.id));
+      summarizeBtn.textContent = isAnalyzing ? '解析中…' : '画像解析';
       summarizeBtn.title = 'Gemini で画像を解析してテキスト化します';
-      if (file.id && imageSummaryRequestState.get(file.id)) {
+      if (isAnalyzing) {
         summarizeBtn.disabled = true;
+        summarizeBtn.dataset.loading = '1';
       }
       actions.appendChild(summarizeBtn);
     }
@@ -2696,7 +2698,7 @@ async function onStoreFileAction(event) {
   const mimeType = row.dataset.mimeType || '';
 
   if (button.dataset.action === 'register-image-summary') {
-    await registerImageSummary({
+    registerImageSummary({
       button,
       container,
       displayName,
@@ -2712,7 +2714,7 @@ async function onStoreFileAction(event) {
   }
 }
 
-async function registerImageSummary({ button, container, displayName, fileId, mimeType, storeId }) {
+function registerImageSummary({ button, container, displayName, fileId, mimeType, storeId }) {
   if (!ensureAuthenticated({ message: '画像を解析するにはログインしてください。' })) {
     return;
   }
@@ -2735,66 +2737,41 @@ async function registerImageSummary({ button, container, displayName, fileId, mi
   if (button) {
     button.disabled = true;
     button.dataset.loading = '1';
+    button.textContent = '解析中…';
   }
 
-  let refreshFn = null;
+  // safeFetch は Authorization: Bearer を自動付与する
+  safeFetch('/api/gemini-register-image-summary', {
+    method: 'POST',
+    body: JSON.stringify({ fileId }),
+  })
+    .then((response) => {
+      console.log('register-image-summary response:', response);
 
-  try {
-    // safeFetch は Authorization: Bearer を自動付与する
-    const response = await safeFetch('/api/gemini-register-image-summary', {
-      method: 'POST',
-      body: JSON.stringify({ fileId }),
+      const alreadyProcessed = Boolean(response?.alreadyProcessed);
+      if (alreadyProcessed) {
+        showToast('この画像はすでに解析済みです。');
+      } else if (response?.success) {
+        showToast('解析テキストを登録しました。');
+      } else {
+        showToast('画像解析の結果を受信しました。');
+      }
+    })
+    .catch((error) => {
+      console.error('画像解析テキストの登録に失敗しました:', error);
+      if (error?.body) {
+        console.error('register-image-summary error body:', error.body);
+      }
+      showToast('画像解析に失敗しました。', { type: 'error' });
+    })
+    .finally(() => {
+      imageSummaryRequestState.delete(fileId);
+      if (button) {
+        button.disabled = false;
+        delete button.dataset.loading;
+        button.textContent = '画像解析';
+      }
     });
-
-    console.log('register-image-summary response:', response);
-
-    const alreadyProcessed = Boolean(response?.alreadyProcessed);
-    if (alreadyProcessed) {
-      showToast('この画像はすでに解析済みです。');
-    } else if (response?.success) {
-      showToast('解析テキストを登録しました。');
-    } else {
-      showToast('画像解析の結果を受信しました。');
-    }
-
-    if (!alreadyProcessed && response?.success && storeId && container) {
-      refreshFn = async () => {
-        if (!container.isConnected) {
-          storeFilesCache.delete(storeId);
-          return;
-        }
-        try {
-          const refreshed = await safeFetch(`/api/documents?fileStoreId=${encodeURIComponent(storeId)}`);
-          const rawFiles = Array.isArray(refreshed.items)
-            ? refreshed.items
-            : Array.isArray(refreshed.files)
-            ? refreshed.files
-            : [];
-          const normalized = rawFiles.map((row) => normalizeFileRow(row));
-          storeFilesCache.set(storeId, normalized);
-          renderFileList(container, normalized);
-        } catch (refreshError) {
-          console.error('画像解析テキスト登録後のファイル一覧更新に失敗しました:', refreshError);
-        }
-      };
-    }
-  } catch (error) {
-    console.error('画像解析テキストの登録に失敗しました:', error);
-    if (error?.body) {
-      console.error('register-image-summary error body:', error.body);
-    }
-    showToast('画像解析に失敗しました。', { type: 'error' });
-  } finally {
-    imageSummaryRequestState.delete(fileId);
-    if (button) {
-      button.disabled = false;
-      delete button.dataset.loading;
-    }
-  }
-
-  if (refreshFn) {
-    await refreshFn();
-  }
 }
 
 async function analyzeStoreFile({ storeId, geminiFileName, displayName, mimeType }) {
