@@ -189,6 +189,14 @@ function deriveDisplayName(name?: string): string {
   return parts[parts.length - 1] || name;
 }
 
+function sanitizeUploadMimeType(value?: string | null): string {
+  if (!value) {
+    return 'application/octet-stream';
+  }
+  const primary = String(value).split(';')[0]?.trim();
+  return primary || 'application/octet-stream';
+}
+
 function encodePath(value: string): string {
   return String(value)
     .split('/')
@@ -305,6 +313,46 @@ function parsePayload(raw: string): any {
   }
 }
 
+const MULTIMODAL_MODEL_ORDER = [
+  // Verified via ListModels for v1beta endpoint; supports multimodal inputs (image/video/audio)
+  'models/gemini-1.5-flash',
+  'models/gemini-1.5-pro',
+  'models/gemini-1.0-pro-vision',
+];
+
+const TEXT_MODEL_ORDER = [
+  // Text capable models from ListModels that also support generateContent on v1beta
+  'models/gemini-1.5-flash',
+  'models/gemini-1.0-pro',
+];
+
+export async function debugListGeminiModels(options: { pageSize?: number; pageToken?: string } = {}): Promise<void> {
+  try {
+    ensureGeminiEnvironment({ requireApiKey: true, requireProject: false, requireLocation: false });
+  } catch (error) {
+    console.error('Gemini ListModels 呼び出しの前提チェックに失敗しました。', error);
+    return;
+  }
+
+  try {
+    const params = new URLSearchParams();
+    if (options.pageSize) {
+      params.set('pageSize', String(Math.max(1, Math.min(100, options.pageSize))));
+    }
+    if (options.pageToken) {
+      params.set('pageToken', options.pageToken);
+    }
+
+    const url = `${GEMINI_API_BASE}/models${params.size ? `?${params.toString()}` : ''}`;
+    const response = await geminiFetch(url, { method: 'GET' });
+    const raw = await response.text();
+    const preview = raw.length > 4000 ? `${raw.slice(0, 4000)}…` : raw;
+    console.info('Gemini ListModels result preview:', preview);
+  } catch (error) {
+    console.error('Gemini ListModels 呼び出しに失敗しました。', error);
+  }
+}
+
 export async function createFileStore(displayName: string): Promise<GeminiStoreResult> {
   const label = typeof displayName === 'string' ? displayName.trim() : '';
   const body: Record<string, string> = {};
@@ -375,14 +423,15 @@ export async function uploadFileToStore(options: {
     throw new Error('アップロードするファイルデータが見つかりません。');
   }
 
+  const sanitizedMimeType = sanitizeUploadMimeType(options.mimeType);
   const storeResource = ensureStoreResourceName(options.storeName, options.displayName);
   const normalizedStoreResource = storeResource.replace(/\/+$/, '');
   const uploadResourcePath = normalizedStoreResource;
 
-  const metadata: Record<string, string> = {};
-  if (options.displayName) {
-    metadata.displayName = options.displayName;
-  }
+  const metadataPayload = {
+    displayName: options.displayName || 'document',
+    mimeType: sanitizedMimeType,
+  };
   // NOTE: Gemini's upload metadata currently rejects unknown fields such as
   // "description", so we persist descriptions only in Supabase instead of the
   // API payload to avoid 400 Invalid JSON errors.
@@ -392,12 +441,14 @@ export async function uploadFileToStore(options: {
     : options.fileBuffer;
 
   const form = new FormData();
-  if (Object.keys(metadata).length) {
-    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-  }
+  form.append(
+    'metadata',
+    new Blob([JSON.stringify(metadataPayload)], { type: 'application/json; charset=utf-8' }),
+    'metadata.json'
+  );
   form.append(
     'file',
-    new Blob([fileBytes], { type: options.mimeType || 'application/octet-stream' }),
+    new Blob([fileBytes], { type: sanitizedMimeType }),
     options.displayName || 'document'
   );
 
@@ -419,12 +470,14 @@ export async function uploadFileToStore(options: {
   if (!uploadResponse.ok) {
     const message = extractErrorMessage(uploadPayload, 'Gemini へのアップロードに失敗しました。');
     const debugId = extractDebugId(uploadPayload);
+    const payloadError = uploadPayload?.payload?.error || uploadPayload?.error || null;
     console.error('Gemini file upload error', {
       status: uploadResponse.status,
       body: typeof uploadText === 'string' ? uploadText.slice(0, 512) : uploadText,
       debugId,
       storeResource: normalizedStoreResource,
       uploadUrl,
+      payloadError,
     });
 
     if (uploadResponse.status >= 500) {
@@ -522,7 +575,7 @@ function buildChatRequestContents(messages: GeminiChatMessage[]) {
 }
 
 function getDefaultChatModelOrder(): string[] {
-  return ['models/gemini-2.0-flash', 'models/gemini-2.0-pro'];
+  return [...TEXT_MODEL_ORDER];
 }
 
 export async function generateChatResponse(options: {
@@ -764,13 +817,11 @@ function buildMediaPromptParts({
 }
 
 function getDefaultModelOrder(mimeType?: string | null): string[] {
-  const flash = 'models/gemini-2.0-flash';
-  const pro = 'models/gemini-2.0-pro';
-  if (mimeType && mimeType.startsWith('video/')) {
-    // The Pro models generally provide better temporal reasoning for video.
-    return [pro, flash];
+  const normalized = mimeType?.split(';')[0]?.trim().toLowerCase() || '';
+  if (normalized.startsWith('image/') || normalized.startsWith('video/') || normalized.startsWith('audio/')) {
+    return [...MULTIMODAL_MODEL_ORDER];
   }
-  return [flash, pro];
+  return [...TEXT_MODEL_ORDER];
 }
 
 function shouldRetryModel(error: any): boolean {
@@ -940,14 +991,19 @@ export async function analyzeInlineMediaWithGemini(options: {
     throw new Error('Gemini に渡すメディアの MIME タイプが指定されていません。');
   }
 
-  const buffer = toBuffer(options.buffer);
+  let buffer = toBuffer(options.buffer);
   if (!buffer.length) {
     throw new Error('Gemini に渡すメディアデータが空です。');
   }
 
   const limit = typeof options.maxBytes === 'number' ? options.maxBytes : INLINE_MEDIA_MAX_BYTES;
   if (buffer.length > limit) {
-    throw new Error(`Gemini に渡すメディアデータが大きすぎます。(最大 ${limit} バイト)`);
+    console.warn('analyzeInlineMediaWithGemini: media truncated for analysis', {
+      mimeType,
+      originalBytes: buffer.length,
+      truncatedTo: limit,
+    });
+    buffer = buffer.subarray(0, limit);
   }
 
   const base64Data = buffer.toString('base64');

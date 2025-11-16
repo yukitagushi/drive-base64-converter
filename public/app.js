@@ -87,6 +87,46 @@ let googleHint;
 
 let toastContainer;
 
+const SUPPORTED_UPLOAD_ACCEPT = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'text/tab-separated-values',
+  'application/json',
+  'application/xml',
+  'text/xml',
+  'text/html',
+  'application/xhtml+xml',
+  'image/*',
+  'video/*',
+  'audio/*',
+  'application/zip',
+  '.doc',
+  '.docx',
+  '.xls',
+  '.xlsx',
+  '.ppt',
+  '.pptx',
+  '.pdf',
+  '.txt',
+  '.md',
+  '.markdown',
+  '.csv',
+  '.tsv',
+  '.json',
+  '.xml',
+  '.html',
+  '.htm',
+  '.zip',
+].join(',');
+
 let publicSupabaseConfig = null;
 
 class HttpError extends Error {
@@ -141,6 +181,9 @@ function cacheDomElements() {
   uploadDialog = document.getElementById('upload-dialog');
   uploadForm = document.getElementById('upload-form');
   uploadFileInput = document.getElementById('upload-file');
+  if (uploadFileInput) {
+    uploadFileInput.setAttribute('accept', SUPPORTED_UPLOAD_ACCEPT);
+  }
   uploadSummary = document.getElementById('upload-summary');
   uploadStoreSelect = document.getElementById('upload-store');
   uploadNotesInput = document.getElementById('upload-notes');
@@ -229,6 +272,18 @@ let conversationHistory = [];
 let isSending = false;
 let storeCache = [];
 const storeFilesCache = new Map();
+const imageSummaryRequestState = new Map();
+const videoSummaryRequestState = new Map();
+const audioTranscriptRequestState = new Map();
+const storeSyncRequestState = new Map();
+const mediaAutoSyncHistory = new Map();
+const mediaAutoSyncRunner = {
+  timerId: null,
+  activeStoreId: null,
+  container: null,
+  syncInFlight: false,
+};
+const MEDIA_SYNC_INTERVAL_MS = 30000;
 
 let supabaseBrowserClient = null;
 let supabaseClientSignature = null;
@@ -2153,12 +2208,18 @@ function renderStores() {
     const title = document.createElement('h4');
     title.className = 'store-title';
     title.textContent = store.displayName || store.geminiStoreName;
+    const syncBtn = document.createElement('button');
+    syncBtn.type = 'button';
+    syncBtn.className = 'btn btn-chip';
+    syncBtn.dataset.action = 'sync-pending';
+    syncBtn.textContent = '未登録ファイルを更新';
     const action = document.createElement('button');
     action.type = 'button';
     action.className = 'btn btn-chip';
     action.dataset.action = 'toggle-files';
     action.textContent = 'ファイル一覧';
     header.appendChild(title);
+    header.appendChild(syncBtn);
     header.appendChild(action);
 
     const meta = document.createElement('div');
@@ -2424,6 +2485,11 @@ async function onStoreListClick(event) {
   const storeId = card.dataset.storeId;
   if (!storeId) return;
 
+  if (button.dataset.action === 'sync-pending') {
+    await syncPendingFiles({ button, card, storeId });
+    return;
+  }
+
   if (button.dataset.action === 'toggle-files') {
     await toggleStoreFiles(card, button, storeId);
   }
@@ -2439,6 +2505,7 @@ async function toggleStoreFiles(card, button, storeId) {
     container.hidden = true;
     container.innerHTML = '';
     button.textContent = 'ファイル一覧';
+    stopMediaAutoSyncLoop(storeId);
     return;
   }
 
@@ -2452,6 +2519,9 @@ async function toggleStoreFiles(card, button, storeId) {
     container.dataset.listenerBound = '1';
   }
 
+  const { listEl } = ensureStoreFilesElements(container);
+  updateMediaSyncStatusForContainer(container);
+
   try {
     let files = storeFilesCache.get(storeId);
     if (!files) {
@@ -2463,21 +2533,86 @@ async function toggleStoreFiles(card, button, storeId) {
       files = rawFiles.map((row) => normalizeFileRow(row));
       storeFilesCache.set(storeId, files);
     }
-    renderFileList(container, files);
+    renderFileList(listEl, files);
+    updateMediaSyncStatusForContainer(container);
+    startMediaAutoSyncLoop(storeId, container);
     button.textContent = '閉じる';
   } catch (error) {
     console.error(error);
-    container.innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`;
+    const { listEl } = ensureStoreFilesElements(container);
+    if (listEl) {
+      listEl.innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`;
+    }
     button.textContent = '再読み込み';
   } finally {
     button.disabled = false;
+    updateMediaSyncStatusForContainer(container);
   }
 }
 
-function renderFileList(container, files) {
-  container.innerHTML = '';
+async function syncPendingFiles({ button, card, storeId }) {
+  if (!ensureAuthenticated({ message: '未登録ファイルを同期するにはログインしてください。' })) {
+    return;
+  }
+
+  if (!storeId) {
+    console.error('同期対象のストア ID が見つかりません。');
+    return;
+  }
+
+  if (storeSyncRequestState.get(storeId)) {
+    return;
+  }
+
+  const originalText = button.textContent;
+  storeSyncRequestState.set(storeId, true);
+  button.disabled = true;
+  button.textContent = '同期中...';
+
+  try {
+    const response = await safeFetch('/api/gemini-sync-pending', {
+      method: 'POST',
+      body: JSON.stringify({ fileStoreId: storeId }),
+    });
+
+    console.log('gemini-sync-pending response:', response);
+
+    if (response?.success) {
+      const processed = Number(response.processedCount || 0);
+      const succeeded = Number(response.succeeded || 0);
+      const failed = Number(response.failed || 0);
+      const summaryMessage = `同期完了: ${succeeded}/${processed} 件成功 (${failed} 件失敗)`;
+      showToast(summaryMessage, { type: failed > 0 ? 'warning' : 'success' });
+    } else {
+      console.error('未登録ファイルの同期が失敗しました:', response);
+      showToast('未登録ファイルの同期に失敗しました。', { type: 'error' });
+    }
+
+    const filesContainer = card.querySelector('.store-files');
+    if (response?.success && filesContainer) {
+      if (filesContainer.hidden) {
+        storeFilesCache.delete(storeId);
+      } else {
+        await refreshStoreFilesView(storeId, filesContainer);
+      }
+    }
+  } catch (error) {
+    console.error('未登録ファイルの同期リクエストに失敗しました:', error);
+    showToast('未登録ファイルの同期に失敗しました。', { type: 'error' });
+  } finally {
+    storeSyncRequestState.delete(storeId);
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
+function renderFileList(listElement, files) {
+  if (!listElement) {
+    return;
+  }
+  listElement.innerHTML = '';
   if (!files.length) {
-    container.innerHTML = '<p class="empty-hint">まだファイルがありません。</p>';
+    listElement.innerHTML = '<p class="empty-hint">まだファイルがありません。</p>';
     return;
   }
 
@@ -2488,7 +2623,7 @@ function renderFileList(container, files) {
     row.dataset.fileStoreId = file.fileStoreId || '';
     row.dataset.geminiFileName = file.geminiFileName || '';
     row.dataset.displayName = file.displayName || file.name || '';
-    row.dataset.mimeType = file.mimeType || '';
+    row.dataset.mimeType = file.mimeType || file.mime_type || '';
 
     const info = document.createElement('div');
     info.className = 'file-row__info';
@@ -2508,6 +2643,54 @@ function renderFileList(container, files) {
     const actions = document.createElement('div');
     actions.className = 'file-row__actions';
 
+    if (isImageMimeType(file.mimeType)) {
+      // 画像解析ボタン: Gemini 画像サマリ API を起動する
+      const summarizeBtn = document.createElement('button');
+      summarizeBtn.type = 'button';
+      summarizeBtn.className = 'btn btn-ghost btn-compact';
+      summarizeBtn.dataset.action = 'register-image-summary';
+      const isAnalyzing = Boolean(file.id && imageSummaryRequestState.get(file.id));
+      summarizeBtn.textContent = isAnalyzing ? '解析中…' : '画像解析';
+      summarizeBtn.title = 'Gemini で画像を解析してテキスト化します';
+      if (isAnalyzing) {
+        summarizeBtn.disabled = true;
+        summarizeBtn.dataset.loading = '1';
+      }
+      actions.appendChild(summarizeBtn);
+    }
+
+    if (isVideoMimeType(file.mimeType)) {
+      // 動画解析ボタン: OpenAI 文字起こし API を起動する
+      const summarizeVideoBtn = document.createElement('button');
+      summarizeVideoBtn.type = 'button';
+      summarizeVideoBtn.className = 'btn btn-ghost btn-compact';
+      summarizeVideoBtn.dataset.action = 'register-video-summary';
+      const isVideoAnalyzing = Boolean(file.id && videoSummaryRequestState.get(file.id));
+      summarizeVideoBtn.textContent = isVideoAnalyzing ? '動画解析中…' : '動画解析';
+      summarizeVideoBtn.title = 'OpenAI で動画の音声を文字起こしします';
+      if (isVideoAnalyzing) {
+        summarizeVideoBtn.disabled = true;
+        summarizeVideoBtn.dataset.loading = '1';
+      }
+      actions.appendChild(summarizeVideoBtn);
+    }
+
+    if (isAudioMimeType(file.mimeType)) {
+      // 音声文字起こしボタン: OpenAI 音声トランスクリプト API を起動する
+      const transcribeBtn = document.createElement('button');
+      transcribeBtn.type = 'button';
+      transcribeBtn.className = 'btn btn-ghost btn-compact';
+      transcribeBtn.dataset.action = 'register-audio-transcript';
+      const isTranscribing = Boolean(file.id && audioTranscriptRequestState.get(file.id));
+      transcribeBtn.textContent = isTranscribing ? '文字起こし中…' : '文字起こし';
+      transcribeBtn.title = 'OpenAI で音声を文字起こしします';
+      if (isTranscribing) {
+        transcribeBtn.disabled = true;
+        transcribeBtn.dataset.loading = '1';
+      }
+      actions.appendChild(transcribeBtn);
+    }
+
     if (file.geminiFileName) {
       const analyzeBtn = document.createElement('button');
       analyzeBtn.type = 'button';
@@ -2520,15 +2703,219 @@ function renderFileList(container, files) {
 
     row.appendChild(info);
     row.appendChild(actions);
-    container.appendChild(row);
+    listElement.appendChild(row);
   }
 }
 
-function isMediaMimeType(mimeType) {
-  if (!mimeType) {
+function ensureStoreFilesElements(container) {
+  if (!container) {
+    return { statusEl: null, listEl: null };
+  }
+  let statusEl = container.querySelector('.media-sync-status');
+  if (!statusEl) {
+    statusEl = document.createElement('div');
+    statusEl.className = 'media-sync-status';
+    statusEl.style.fontSize = '12px';
+    statusEl.style.color = '#555';
+    statusEl.style.margin = '0 0 6px';
+    container.appendChild(statusEl);
+  }
+  let listEl = container.querySelector('.media-sync-list');
+  if (!listEl) {
+    listEl = document.createElement('div');
+    listEl.className = 'media-sync-list';
+    container.appendChild(listEl);
+  }
+  return { statusEl, listEl };
+}
+
+function updateMediaSyncStatusForContainer(container) {
+  if (!container || !container.isConnected) {
+    return;
+  }
+  const { statusEl } = ensureStoreFilesElements(container);
+  if (!statusEl) {
+    return;
+  }
+  const storeId = container.dataset.storeId || '';
+  const history = mediaAutoSyncHistory.get(storeId) || null;
+  const isActive = mediaAutoSyncRunner.activeStoreId === storeId;
+  const isRunning = isActive && mediaAutoSyncRunner.syncInFlight;
+
+  if (isRunning) {
+    statusEl.textContent = '🔄 AI自動解析中…（音声・動画・画像を順次処理しています）';
+    statusEl.dataset.state = 'running';
+    return;
+  }
+
+  if (history) {
+    const icon = history.pendingCount > 0 ? '🟡' : '✅';
+    statusEl.textContent = `${icon} AI自動解析完了 / 今回: ${history.processedCount}件（成功 ${history.succeeded} / 失敗 ${history.failed}） / 残り: ${history.pendingCount}件`;
+    statusEl.dataset.state = history.pendingCount > 0 ? 'pending' : 'complete';
+    return;
+  }
+
+  statusEl.textContent = '⏸ AI自動解析待機中';
+  statusEl.dataset.state = 'idle';
+}
+
+function startMediaAutoSyncLoop(storeId, container) {
+  if (!storeId || !container || !container.isConnected) {
+    return;
+  }
+  stopMediaAutoSyncLoop();
+  mediaAutoSyncRunner.activeStoreId = storeId;
+  mediaAutoSyncRunner.container = container;
+  mediaAutoSyncRunner.syncInFlight = false;
+  updateMediaSyncStatusForContainer(container);
+  mediaAutoSyncRunner.timerId = setInterval(runMediaAutoSyncTick, MEDIA_SYNC_INTERVAL_MS);
+  runMediaAutoSyncTick();
+}
+
+function stopMediaAutoSyncLoop(storeId) {
+  if (storeId && mediaAutoSyncRunner.activeStoreId && mediaAutoSyncRunner.activeStoreId !== storeId) {
+    return;
+  }
+  if (mediaAutoSyncRunner.timerId) {
+    clearInterval(mediaAutoSyncRunner.timerId);
+  }
+  mediaAutoSyncRunner.timerId = null;
+  const previousContainer = mediaAutoSyncRunner.container;
+  mediaAutoSyncRunner.activeStoreId = null;
+  mediaAutoSyncRunner.container = null;
+  mediaAutoSyncRunner.syncInFlight = false;
+  if (previousContainer && previousContainer.isConnected) {
+    updateMediaSyncStatusForContainer(previousContainer);
+  }
+}
+
+async function runMediaAutoSyncTick() {
+  const storeId = mediaAutoSyncRunner.activeStoreId;
+  const container = mediaAutoSyncRunner.container;
+  if (!storeId || !container || container.hidden || !container.isConnected) {
+    if (storeId) {
+      stopMediaAutoSyncLoop(storeId);
+    }
+    return;
+  }
+  if (mediaAutoSyncRunner.syncInFlight) {
+    return;
+  }
+  mediaAutoSyncRunner.syncInFlight = true;
+  updateMediaSyncStatusForContainer(container);
+
+  try {
+    const response = await safeFetch('/api/gemini-sync-media', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileStoreId: storeId }),
+    });
+
+    if (response?.success) {
+      const lastResult = {
+        processedCount: Number(response.processedCount || 0),
+        succeeded: Number(response.succeeded || 0),
+        failed: Number(response.failed || 0),
+        pendingCount: Number(response.pendingCount || 0),
+        lastRunAt: new Date().toISOString(),
+      };
+      mediaAutoSyncHistory.set(storeId, lastResult);
+      updateMediaSyncStatusForContainer(container);
+
+      if (lastResult.processedCount > 0) {
+        await refreshStoreFilesView(storeId, container);
+      }
+    } else {
+      console.warn('メディア自動同期 API が失敗しました:', response);
+    }
+  } catch (error) {
+    console.error('メディア自動同期リクエストに失敗しました:', error);
+    if (error?.status === 401 || error?.status === 403) {
+      stopMediaAutoSyncLoop(mediaAutoSyncRunner.activeStoreId);
+    }
+  } finally {
+    mediaAutoSyncRunner.syncInFlight = false;
+    if (mediaAutoSyncRunner.container && mediaAutoSyncRunner.container.isConnected) {
+      updateMediaSyncStatusForContainer(mediaAutoSyncRunner.container);
+    }
+  }
+}
+
+async function refreshStoreFilesView(storeId, container) {
+  if (!storeId || !container || container.hidden || !container.isConnected) {
+    return;
+  }
+  try {
+    const refreshed = await safeFetch(`/api/documents?fileStoreId=${encodeURIComponent(storeId)}`);
+    const rawFiles = Array.isArray(refreshed.items)
+      ? refreshed.items
+      : Array.isArray(refreshed.files)
+      ? refreshed.files
+      : [];
+    const normalized = rawFiles.map((row) => normalizeFileRow(row));
+    storeFilesCache.set(storeId, normalized);
+    const { listEl } = ensureStoreFilesElements(container);
+    renderFileList(listEl, normalized);
+  } catch (error) {
+    console.error('自動同期後のファイル一覧更新に失敗しました:', error);
+  } finally {
+    updateMediaSyncStatusForContainer(container);
+  }
+}
+
+function normalizeMimeTypeValue(input) {
+  if (!input) {
+    return '';
+  }
+  if (typeof input === 'string') {
+    return input;
+  }
+  if (typeof input === 'object') {
+    return input.mimeType || input.mime_type || input.type || '';
+  }
+  return '';
+}
+
+function isImageMimeType(value) {
+  const lower = normalizeMimeTypeValue(value).toLowerCase();
+  return Boolean(lower) && lower.startsWith('image/');
+}
+
+function isVideoMimeType(value) {
+  const lower = normalizeMimeTypeValue(value).toLowerCase();
+  return Boolean(lower) && lower.startsWith('video/');
+}
+
+function isAudioMimeType(value) {
+  const lower = normalizeMimeTypeValue(value).toLowerCase();
+  return Boolean(lower) && lower.startsWith('audio/');
+}
+
+const OPENAI_CONTENT_LIMIT_MESSAGE =
+  '音声・動画が長すぎるため、自動解析の対象を 25MB（およそ十数分の音声）までに制限しています。短くしたファイルで再度お試しください。';
+
+function isOpenAIContentLimitError(error) {
+  if (!error) {
     return false;
   }
-  const lower = String(mimeType).toLowerCase();
+  if (error.status === 413) {
+    return true;
+  }
+  const body = error.body || {};
+  const candidates = [
+    body?.message,
+    body?.error,
+    body?.openaiError?.message,
+    body?.openaiError?.data?.error?.message,
+  ];
+  return candidates.some((value) => typeof value === 'string' && value.includes('Maximum content size limit'));
+}
+
+function isMediaMimeType(value) {
+  const lower = normalizeMimeTypeValue(value).toLowerCase();
+  if (!lower) {
+    return false;
+  }
   return lower.startsWith('image/') || lower.startsWith('video/') || lower.startsWith('audio/');
 }
 
@@ -2545,13 +2932,246 @@ async function onStoreFileAction(event) {
   }
 
   const storeId = row.dataset.fileStoreId || container.dataset.storeId || '';
+  const fileId = row.dataset.fileId || '';
   const geminiFileName = row.dataset.geminiFileName || '';
   const displayName = row.dataset.displayName || '';
   const mimeType = row.dataset.mimeType || '';
 
+  if (button.dataset.action === 'register-image-summary') {
+    registerImageSummary({
+      button,
+      container,
+      displayName,
+      fileId,
+      mimeType,
+      storeId,
+    });
+    return;
+  }
+
+  if (button.dataset.action === 'register-video-summary') {
+    registerVideoSummary({
+      button,
+      container,
+      displayName,
+      fileId,
+      mimeType,
+      storeId,
+    });
+    return;
+  }
+
+  if (button.dataset.action === 'register-audio-transcript') {
+    registerAudioTranscript({
+      button,
+      container,
+      displayName,
+      fileId,
+      mimeType,
+      storeId,
+    });
+    return;
+  }
+
   if (button.dataset.action === 'analyze-file') {
     await analyzeStoreFile({ storeId, geminiFileName, displayName, mimeType });
   }
+}
+
+function registerImageSummary({ button, container, displayName, fileId, mimeType, storeId }) {
+  if (!ensureAuthenticated({ message: '画像を解析するにはログインしてください。' })) {
+    return;
+  }
+
+  if (!fileId) {
+    console.error('画像解析テキスト登録に必要なファイル ID が見つかりません。');
+    return;
+  }
+
+  if (!isImageMimeType(mimeType)) {
+    showToast('画像ファイルのみ解析できます。', { type: 'error' });
+    return;
+  }
+
+  if (imageSummaryRequestState.get(fileId)) {
+    return;
+  }
+
+  imageSummaryRequestState.set(fileId, true);
+  if (button) {
+    button.disabled = true;
+    button.dataset.loading = '1';
+    button.textContent = '解析中…';
+  }
+
+  // safeFetch は Authorization: Bearer を自動付与する
+  safeFetch('/api/gemini-register-image-summary', {
+    method: 'POST',
+    body: JSON.stringify({ fileId }),
+  })
+    .then((response) => {
+      console.log('register-image-summary response:', response);
+
+      const alreadyProcessed = Boolean(response?.alreadyProcessed);
+      if (alreadyProcessed) {
+        showToast('この画像はすでに解析済みです。');
+      } else if (response?.success) {
+        showToast('解析テキストを登録しました。');
+      } else {
+        showToast('画像解析の結果を受信しました。');
+      }
+    })
+    .catch((error) => {
+      console.error('画像解析テキストの登録に失敗しました:', error);
+      if (error?.body) {
+        console.error('register-image-summary error body:', error.body);
+      }
+      showToast('画像解析に失敗しました。', { type: 'error' });
+    })
+    .finally(() => {
+      imageSummaryRequestState.delete(fileId);
+      if (button) {
+        button.disabled = false;
+        delete button.dataset.loading;
+        button.textContent = '画像解析';
+      }
+    });
+}
+
+function registerVideoSummary({ button, container, displayName, fileId, mimeType, storeId }) {
+  if (!ensureAuthenticated({ message: '動画を解析するにはログインしてください。' })) {
+    return;
+  }
+
+  if (!fileId) {
+    console.error('動画解析テキスト登録に必要なファイル ID が見つかりません。');
+    return;
+  }
+
+  if (!isVideoMimeType(mimeType)) {
+    showToast('動画ファイルのみ解析できます。', { type: 'error' });
+    return;
+  }
+
+  if (videoSummaryRequestState.get(fileId)) {
+    return;
+  }
+
+  videoSummaryRequestState.set(fileId, true);
+  if (button) {
+    button.disabled = true;
+    button.dataset.loading = '1';
+    button.textContent = '動画解析中…';
+  }
+
+  safeFetch('/api/gemini-register-video-summary', {
+    method: 'POST',
+    body: JSON.stringify({ fileId }),
+  })
+    .then((response) => {
+      console.log('register-video-summary response:', response);
+
+      const alreadyProcessed = Boolean(response?.alreadyProcessed);
+      if (alreadyProcessed) {
+        showToast('この動画はすでに文字起こし済みです。');
+      } else if (response?.success) {
+        showToast('動画文字起こしテキストを登録しました。');
+      } else {
+        showToast('動画文字起こしの結果を受信しました。');
+      }
+    })
+    .catch((error) => {
+      console.error('動画文字起こしテキストの登録に失敗しました:', error);
+      if (error?.body) {
+        console.error('register-video-summary error body:', error.body);
+        if (error.body.openaiError) {
+          console.error('openaiError:', error.body.openaiError);
+        }
+      }
+      if (isOpenAIContentLimitError(error)) {
+        showToast(OPENAI_CONTENT_LIMIT_MESSAGE, {
+          type: 'warning',
+        });
+      } else {
+        showToast('動画文字起こしに失敗しました。', { type: 'error' });
+      }
+    })
+    .finally(() => {
+      videoSummaryRequestState.delete(fileId);
+      if (button) {
+        button.disabled = false;
+        delete button.dataset.loading;
+        button.textContent = '動画解析';
+      }
+    });
+}
+
+function registerAudioTranscript({ button, container, displayName, fileId, mimeType, storeId }) {
+  if (!ensureAuthenticated({ message: '音声を文字起こしするにはログインしてください。' })) {
+    return;
+  }
+
+  if (!fileId) {
+    console.error('音声文字起こしに必要なファイル ID が見つかりません。');
+    return;
+  }
+
+  if (!isAudioMimeType(mimeType)) {
+    showToast('音声ファイルのみ文字起こしできます。', { type: 'error' });
+    return;
+  }
+
+  if (audioTranscriptRequestState.get(fileId)) {
+    return;
+  }
+
+  audioTranscriptRequestState.set(fileId, true);
+  if (button) {
+    button.disabled = true;
+    button.dataset.loading = '1';
+    button.textContent = '文字起こし中…';
+  }
+
+  safeFetch('/api/gemini-register-audio-transcript', {
+    method: 'POST',
+    body: JSON.stringify({ fileId }),
+  })
+    .then((response) => {
+      console.log('register-audio-transcript response:', response);
+
+      const alreadyProcessed = Boolean(response?.alreadyProcessed);
+      if (alreadyProcessed) {
+        showToast('この音声はすでに文字起こし済みです。');
+      } else if (response?.success) {
+        showToast('文字起こしテキストを登録しました。');
+      } else {
+        showToast('音声文字起こしの結果を受信しました。');
+      }
+    })
+    .catch((error) => {
+      console.error('音声文字起こしの登録に失敗しました:', error);
+      if (error?.body) {
+        console.error('register-audio-transcript error body:', error.body);
+        if (error.body.openaiError) {
+          console.error('openaiError:', error.body.openaiError);
+        }
+      }
+      if (isOpenAIContentLimitError(error)) {
+        showToast(OPENAI_CONTENT_LIMIT_MESSAGE, {
+          type: 'warning',
+        });
+      } else {
+        showToast('音声文字起こしに失敗しました。', { type: 'error' });
+      }
+    })
+    .finally(() => {
+      audioTranscriptRequestState.delete(fileId);
+      if (button) {
+        button.disabled = false;
+        delete button.dataset.loading;
+        button.textContent = '文字起こし';
+      }
+    });
 }
 
 async function analyzeStoreFile({ storeId, geminiFileName, displayName, mimeType }) {
