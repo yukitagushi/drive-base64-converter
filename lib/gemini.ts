@@ -777,12 +777,11 @@ function buildMediaPromptParts({
 }
 
 function getDefaultModelOrder(mimeType?: string | null): string[] {
-  const normalized = (mimeType || '').toLowerCase();
-  const mediaDefaults = ['models/gemini-1.5-pro-latest', 'models/gemini-pro-vision'];
-  if (normalized.startsWith('image/') || normalized.startsWith('video/')) {
-    return mediaDefaults;
+  const normalized = mimeType?.split(';')[0]?.trim().toLowerCase() || '';
+  if (normalized.startsWith('image/') || normalized.startsWith('video/') || normalized.startsWith('audio/')) {
+    return ['models/gemini-pro-vision'];
   }
-  return ['models/gemini-1.5-pro-latest', 'models/gemini-pro', 'models/gemini-1.0-pro'];
+  return ['models/gemini-pro'];
 }
 
 function shouldRetryModel(error: any): boolean {
