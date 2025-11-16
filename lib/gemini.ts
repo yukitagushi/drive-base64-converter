@@ -616,7 +616,6 @@ function normalizeModelId(value?: string | null): string | null {
 
 function buildChatRequestContents(messages: GeminiChatMessage[]) {
   const contents: any[] = [];
-  const systemParts: Array<{ text: string }> = [];
 
   for (const entry of messages || []) {
     if (!entry || typeof entry.content !== 'string') {
@@ -628,7 +627,7 @@ function buildChatRequestContents(messages: GeminiChatMessage[]) {
     }
 
     if (entry.role === 'system') {
-      systemParts.push({ text: trimmed });
+      // system メッセージは generateChatResponse 側で最初の user に統合済み
       continue;
     }
 
@@ -639,7 +638,7 @@ function buildChatRequestContents(messages: GeminiChatMessage[]) {
     });
   }
 
-  return { contents, systemParts };
+  return contents;
 }
 
 export async function generateChatResponse(options: {
@@ -658,31 +657,32 @@ export async function generateChatResponse(options: {
 
   ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
 
-  const messageList = Array.isArray(options.messages) ? options.messages : [];
-  const { contents, systemParts } = buildChatRequestContents(messageList);
+  const baseMessages = Array.isArray(options.messages) ? [...options.messages] : [];
+
+  const instruction = options.systemInstruction?.trim();
+  if (instruction) {
+    const firstUserIndex = baseMessages.findIndex((message) => message?.role === 'user' && typeof message.content === 'string');
+    if (firstUserIndex >= 0) {
+      const existing = baseMessages[firstUserIndex]?.content || '';
+      baseMessages[firstUserIndex] = {
+        ...baseMessages[firstUserIndex],
+        content: `${instruction}\n\n${existing}`.trim(),
+      };
+    } else {
+      baseMessages.unshift({
+        role: 'user',
+        content: instruction,
+      });
+    }
+  }
+
+  const contents = buildChatRequestContents(baseMessages);
   if (!contents.length) {
     throw new Error('Gemini チャットにはユーザーまたはアシスタントのメッセージが必要です。');
   }
 
-  const aggregatedSystemParts = [...systemParts];
-  if (options.systemInstruction) {
-    const trimmed = options.systemInstruction.trim();
-    if (trimmed) {
-      aggregatedSystemParts.unshift({ text: trimmed });
-    }
-  }
-
-  const finalContents: any[] = [];
-  if (aggregatedSystemParts.length > 0) {
-    finalContents.push({
-      role: 'system',
-      parts: aggregatedSystemParts,
-    });
-  }
-  finalContents.push(...contents);
-
   const body: Record<string, any> = {
-    contents: finalContents,
+    contents,
   };
 
   const generationConfig: Record<string, number> = {};
