@@ -620,7 +620,7 @@ export async function generateChatResponse(options: {
         parts.unshift({ text: trimmed });
       }
     }
-    body.systemInstruction = {
+    body.system_instruction = {
       role: 'system',
       parts,
     };
@@ -678,6 +678,15 @@ export async function generateChatResponse(options: {
   }
   if (toolConfig) {
     body.tool_config = toolConfig;
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const payloadPreview = JSON.stringify(body);
+      console.debug('Gemini chat payload preview:', payloadPreview.length > 2000 ? `${payloadPreview.slice(0, 2000)}…` : payloadPreview);
+    } catch (payloadError) {
+      console.debug('Gemini chat payload serialization failed:', payloadError);
+    }
   }
 
   const preferredModel = normalizeModelId(options.model);

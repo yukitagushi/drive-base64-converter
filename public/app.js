@@ -2834,9 +2834,50 @@ async function runMediaAutoSyncTick() {
       stopMediaAutoSyncLoop(mediaAutoSyncRunner.activeStoreId);
     }
   } finally {
+    await syncPendingDocumentsForStore(storeId, container);
     mediaAutoSyncRunner.syncInFlight = false;
     if (mediaAutoSyncRunner.container && mediaAutoSyncRunner.container.isConnected) {
       updateMediaSyncStatusForContainer(mediaAutoSyncRunner.container);
+    }
+  }
+}
+
+async function syncPendingDocumentsForStore(storeId, container) {
+  if (!storeId) {
+    return;
+  }
+
+  try {
+    const response = await safeFetch('/api/gemini-sync-documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileStoreId: storeId }),
+    });
+
+    if (response?.success) {
+      console.log('ドキュメント自動同期結果:', {
+        processedCount: Number(response.processedCount || 0),
+        succeeded: Number(response.succeeded || 0),
+        failed: Number(response.failed || 0),
+        pendingCount: Number(response.pendingCount || 0),
+        lastRunAt: new Date().toISOString(),
+      });
+
+      if (
+        Number(response.processedCount || 0) > 0 &&
+        container &&
+        container.isConnected &&
+        !container.hidden
+      ) {
+        await refreshStoreFilesView(storeId, container);
+      }
+    } else {
+      console.warn('ドキュメント自動同期 API が失敗しました:', response);
+    }
+  } catch (error) {
+    console.error('ドキュメント自動同期リクエストに失敗しました:', error);
+    if (error?.status === 401 || error?.status === 403) {
+      stopMediaAutoSyncLoop(storeId);
     }
   }
 }
