@@ -315,15 +315,15 @@ function parsePayload(raw: string): any {
 }
 
 const PREFERRED_MULTIMODAL_MODELS = [
+  // Restrict to names that ListModels for /v1 has actually reported.
   'models/gemini-1.5-flash',
   'models/gemini-1.5-pro',
-  'models/gemini-pro-vision',
+  'models/gemini-1.0-pro-vision',
 ];
 
 const PREFERRED_TEXT_MODELS = [
   'models/gemini-1.5-pro',
-  'models/gemini-1.5-flash',
-  'models/gemini-pro',
+  'models/gemini-1.0-pro',
   'models/chat-bison-001',
   'models/text-bison-001',
 ];
@@ -417,6 +417,7 @@ async function fetchGenerateContentModelNames(forceRefresh = false): Promise<str
 
   cachedGenerateContentModels = discovered;
   cachedGenerateContentModelsFetchedAt = now;
+  console.info('fetchGenerateContentModelNames available:', cachedGenerateContentModels);
   return discovered;
 }
 
