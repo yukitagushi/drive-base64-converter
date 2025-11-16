@@ -1,7 +1,7 @@
 const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com';
 const GEMINI_API_BASE = `${GEMINI_API_ROOT}/v1beta`;
 const GEMINI_UPLOAD_BASE = `${GEMINI_API_ROOT}/upload/v1beta`;
-const GEMINI_CHAT_BASE = `${GEMINI_API_ROOT}/v1`;
+const GEMINI_CHAT_BASE = `${GEMINI_API_ROOT}/v1beta`;
 
 export interface GeminiEnvironmentConfig {
   apiKey: string;
@@ -315,17 +315,14 @@ function parsePayload(raw: string): any {
 }
 
 const PREFERRED_MULTIMODAL_MODELS = [
-  // Restrict to names that ListModels for /v1 has actually reported.
-  'models/gemini-1.5-flash',
-  'models/gemini-1.5-pro',
-  'models/gemini-1.0-pro-vision',
+  // Gemini 2.5 family supports File Search tools on /v1beta generateContent.
+  'models/gemini-2.5-flash',
+  'models/gemini-2.5-pro',
 ];
 
 const PREFERRED_TEXT_MODELS = [
-  'models/gemini-1.5-pro',
-  'models/gemini-1.0-pro',
-  'models/chat-bison-001',
-  'models/text-bison-001',
+  'models/gemini-2.5-pro',
+  'models/gemini-2.5-flash',
 ];
 
 const GEMINI_MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
