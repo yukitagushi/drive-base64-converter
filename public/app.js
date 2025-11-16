@@ -12,6 +12,7 @@ let landingRequestButton;
 let loginBackButton;
 
 let messageList;
+let chatThreadTitle;
 let chatForm;
 let chatInput;
 let chatSubmitButton;
@@ -151,6 +152,16 @@ function cacheDomElements() {
   loginBackButton = document.getElementById('login-back');
 
   messageList = document.getElementById('message-list');
+  chatThreadTitle = document.getElementById('chat-thread-title');
+  if (!chatThreadTitle && messageList && messageList.parentElement) {
+    chatThreadTitle = document.createElement('div');
+    chatThreadTitle.id = 'chat-thread-title';
+    chatThreadTitle.className = 'chat-thread-title';
+    chatThreadTitle.textContent = 'スレッドを選択すると会話履歴が表示されます。';
+    chatThreadTitle.style.fontWeight = '600';
+    chatThreadTitle.style.margin = '0 0 12px';
+    messageList.parentElement.insertBefore(chatThreadTitle, messageList);
+  }
   chatForm = document.getElementById('chat-form');
   chatInput = document.getElementById('chat-input');
   chatSubmitButton = document.querySelector('#chat-form button[type="submit"]');
@@ -268,7 +279,9 @@ async function waitForDom() {
   }
 }
 
-let conversationHistory = [];
+let activeThreadId = null;
+const threadMessagesCache = new Map();
+const threadMessageRequests = new Map();
 let isSending = false;
 let storeCache = [];
 const storeFilesCache = new Map();
@@ -1679,8 +1692,12 @@ function applySessionUpdate(nextSession, threads) {
       sessionState.supabaseConfigured = nextSession.supabaseConfigured;
     }
 
-    if (previousThread && previousThread !== sessionState.threadId) {
-      resetConversation();
+    if (previousThread !== sessionState.threadId) {
+      ensureActiveThread(sessionState.threadId, { fetchIfMissing: Boolean(sessionState.threadId) });
+    } else if (sessionState.threadId && !activeThreadId) {
+      ensureActiveThread(sessionState.threadId, { fetchIfMissing: false });
+    } else {
+      updateActiveThreadTitle();
     }
   }
 
@@ -1815,6 +1832,7 @@ function renderThreads() {
   });
 
   threadList.appendChild(fragment);
+  updateActiveThreadTitle();
 }
 
 function updateSessionHint() {
@@ -1829,9 +1847,88 @@ function updateSessionHint() {
 }
 
 function resetConversation() {
-  conversationHistory = [];
-  renderConversation(conversationHistory);
+  activeThreadId = null;
+  threadMessagesCache.clear();
+  threadMessageRequests.clear();
+  renderConversation([]);
+  updateActiveThreadTitle();
   setStatus('ジェミニ準備完了');
+}
+
+function getThreadTitle(threadId) {
+  if (!threadId) {
+    return null;
+  }
+  const thread = threadCache.find((item) => item.id === threadId);
+  return thread?.title || null;
+}
+
+function updateActiveThreadTitle() {
+  if (!chatThreadTitle) {
+    return;
+  }
+  if (!activeThreadId) {
+    chatThreadTitle.textContent = 'スレッドを選択すると会話履歴が表示されます。';
+    chatThreadTitle.dataset.empty = '1';
+    return;
+  }
+  delete chatThreadTitle.dataset.empty;
+  chatThreadTitle.textContent = getThreadTitle(activeThreadId) || '無題のスレッド';
+}
+
+function ensureActiveThread(threadId, options = {}) {
+  const { messages = null, fetchIfMissing = true, forceReload = false } = options;
+  activeThreadId = threadId || null;
+  updateActiveThreadTitle();
+  if (!threadId) {
+    renderConversation([]);
+    return;
+  }
+
+  if (Array.isArray(messages)) {
+    threadMessagesCache.set(threadId, messages);
+  }
+
+  const cached = threadMessagesCache.get(threadId) || [];
+  renderConversation(cached);
+
+  if ((forceReload || !threadMessagesCache.has(threadId)) && fetchIfMissing) {
+    fetchThreadMessages(threadId).catch((error) => {
+      console.error('Failed to load thread messages:', error);
+      if (!threadMessagesCache.has(threadId)) {
+        showToast('スレッドの履歴を読み込めませんでした。', { type: 'error' });
+      }
+    });
+  }
+}
+
+async function fetchThreadMessages(threadId, options = {}) {
+  if (!threadId) {
+    return [];
+  }
+  if (!options.force && threadMessageRequests.has(threadId)) {
+    return threadMessageRequests.get(threadId);
+  }
+
+  const request = (async () => {
+    try {
+      const data = await safeFetch(`/api/chat?threadId=${encodeURIComponent(threadId)}`, { method: 'GET' });
+      if (data?.error) {
+        throw new Error(data.error || 'スレッド履歴の取得に失敗しました');
+      }
+      const messages = Array.isArray(data.messages) ? data.messages : [];
+      threadMessagesCache.set(threadId, messages);
+      if (threadId === activeThreadId) {
+        renderConversation(messages);
+      }
+      return messages;
+    } finally {
+      threadMessageRequests.delete(threadId);
+    }
+  })();
+
+  threadMessageRequests.set(threadId, request);
+  return request;
 }
 
 function normalizeThread(thread) {
@@ -1962,8 +2059,9 @@ async function onThreadListClick(event) {
   const card = event.target.closest('[data-thread-id]');
   if (!card) return;
   const threadId = card.dataset.threadId;
-  if (!threadId || threadId === sessionState.threadId) return;
+  if (!threadId) return;
   await setSession({ threadId });
+  ensureActiveThread(threadId, { fetchIfMissing: true, forceReload: false });
 }
 
 async function setSession(partial) {
@@ -2053,10 +2151,14 @@ async function onChatSubmit(event) {
       throw new Error(data.error || '応答の取得に失敗しました');
     }
 
-    conversationHistory = Array.isArray(data.messages) ? data.messages : [];
-    sessionState.threadId = data.threadId || sessionState.threadId;
-
-    renderConversation(conversationHistory);
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    const threadId = data.threadId || sessionState.threadId;
+    if (threadId) {
+      sessionState.threadId = threadId;
+      ensureActiveThread(threadId, { messages, fetchIfMissing: false, forceReload: false });
+    } else {
+      renderConversation(messages);
+    }
     setStatus('ジェミニ準備完了');
 
     loadSession().catch((error) => console.error(error));
