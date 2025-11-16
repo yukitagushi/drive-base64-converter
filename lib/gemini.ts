@@ -641,6 +641,51 @@ function buildChatRequestContents(messages: GeminiChatMessage[]) {
   return contents;
 }
 
+function buildChatPayload({
+  contents,
+  fileSearch,
+  generationConfig,
+}: {
+  contents: any[];
+  fileSearch?: GeminiChatFileSearchOptions | null;
+  generationConfig?: Record<string, number>;
+}) {
+  const payload: Record<string, any> = {
+    contents,
+  };
+
+  if (fileSearch && fileSearch.storeName) {
+    payload.tools = [
+      {
+        file_search: {
+          file_search_store_names: [fileSearch.storeName],
+        },
+      },
+    ];
+
+    const fileSearchConfig: Record<string, any> = {};
+    if (typeof fileSearch.maxChunks === 'number') {
+      fileSearchConfig.max_chunks = fileSearch.maxChunks;
+    }
+    if (typeof fileSearch.dynamicThreshold === 'number') {
+      fileSearchConfig.dynamic_retrieval_config = {
+        mode: 'MODE_DYNAMIC',
+        dynamic_threshold: fileSearch.dynamicThreshold,
+      };
+    }
+
+    if (Object.keys(fileSearchConfig).length > 0) {
+      payload.tool_config = { file_search: fileSearchConfig };
+    }
+  }
+
+  if (generationConfig && Object.keys(generationConfig).length > 0) {
+    payload.generationConfig = generationConfig;
+  }
+
+  return payload;
+}
+
 export async function generateChatResponse(options: {
   messages: GeminiChatMessage[];
   model?: string;
@@ -681,10 +726,6 @@ export async function generateChatResponse(options: {
     throw new Error('Gemini チャットにはユーザーまたはアシスタントのメッセージが必要です。');
   }
 
-  const body: Record<string, any> = {
-    contents,
-  };
-
   const generationConfig: Record<string, number> = {};
   if (typeof options.temperature === 'number') {
     generationConfig.temperature = options.temperature;
@@ -698,13 +739,15 @@ export async function generateChatResponse(options: {
   if (typeof options.maxOutputTokens === 'number') {
     generationConfig.maxOutputTokens = options.maxOutputTokens;
   }
-  if (Object.keys(generationConfig).length > 0) {
-    body.generationConfig = generationConfig;
-  }
+  const payload = buildChatPayload({
+    contents,
+    fileSearch: options.fileSearch,
+    generationConfig,
+  });
 
   if (process.env.NODE_ENV !== 'production') {
     try {
-      const payloadPreview = JSON.stringify(body);
+      const payloadPreview = JSON.stringify(payload);
       console.debug('Gemini chat payload preview:', payloadPreview.length > 2000 ? `${payloadPreview.slice(0, 2000)}…` : payloadPreview);
     } catch (payloadError) {
       console.debug('Gemini chat payload serialization failed:', payloadError);
@@ -722,7 +765,7 @@ export async function generateChatResponse(options: {
     throw new Error('利用可能な Gemini チャットモデルが選択されていません。');
   }
 
-  const bodyJson = JSON.stringify(body);
+  const bodyJson = JSON.stringify(payload);
   let lastError: any = null;
 
   for (const model of orderedModels) {
