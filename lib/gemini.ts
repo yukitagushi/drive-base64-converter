@@ -1,6 +1,7 @@
 const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com';
 const GEMINI_API_BASE = `${GEMINI_API_ROOT}/v1beta`;
 const GEMINI_UPLOAD_BASE = `${GEMINI_API_ROOT}/upload/v1beta`;
+const GEMINI_CHAT_BASE = `${GEMINI_API_ROOT}/v1`;
 
 export interface GeminiEnvironmentConfig {
   apiKey: string;
@@ -314,7 +315,7 @@ function parsePayload(raw: string): any {
 }
 
 const MULTIMODAL_MODEL_ORDER = [
-  // Derived from ListModels for v1beta generateContent support (image/video/audio)
+  // Derived from ListModels for the v1 generateContent endpoint (image/video/audio)
   'models/gemini-1.5-flash-latest',
   'models/gemini-1.5-pro-latest',
 ];
@@ -342,7 +343,7 @@ export async function debugListGeminiModels(options: { pageSize?: number; pageTo
       params.set('pageToken', options.pageToken);
     }
 
-    const url = `${GEMINI_API_BASE}/models${params.size ? `?${params.toString()}` : ''}`;
+    const url = `${GEMINI_CHAT_BASE}/models${params.size ? `?${params.toString()}` : ''}`;
     const response = await geminiFetch(url, { method: 'GET' });
     const raw = await response.text();
     const preview = raw.length > 4000 ? `${raw.slice(0, 4000)}…` : raw;
@@ -694,7 +695,7 @@ export async function generateChatResponse(options: {
   let lastError: any = null;
 
   for (const model of orderedModels) {
-    const url = `${GEMINI_API_BASE}/${encodePath(model)}:generateContent`;
+    const url = `${GEMINI_CHAT_BASE}/${encodePath(model)}:generateContent`;
     const response = await geminiFetch(url, {
       method: 'POST',
       headers: {
