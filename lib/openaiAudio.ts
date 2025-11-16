@@ -1,6 +1,6 @@
 const OPENAI_API_BASE = process.env.OPENAI_API_BASE || 'https://api.openai.com/v1';
 const DEFAULT_TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || 'whisper-1';
-const OPENAI_MAX_BYTES = 25 * 1024 * 1024; // 25MB limit documented by OpenAI audio APIs
+const OPENAI_MAX_BYTES = 24 * 1024 * 1024; // keep a safety margin under OpenAI's 25MB audio limit
 
 export class OpenAITranscriptionError extends Error {
   status?: number;
@@ -110,6 +110,13 @@ export async function transcribeWithOpenAI(params: {
 
   const rawText = await response.text();
   if (!response.ok) {
+    if (response.status === 413) {
+      console.error('transcribeWithOpenAI: received 413 from OpenAI after truncation', {
+        mimeType,
+        fileName,
+        attemptedBytes: buffer.length,
+      });
+    }
     let payload: any = null;
     try {
       payload = JSON.parse(rawText);

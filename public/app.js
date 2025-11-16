@@ -2726,6 +2726,9 @@ function isAudioMimeType(value) {
   return Boolean(lower) && lower.startsWith('audio/');
 }
 
+const OPENAI_CONTENT_LIMIT_MESSAGE =
+  '音声・動画が長すぎるため、自動解析の対象を 25MB（およそ十数分の音声）までに制限しています。短くしたファイルで再度お試しください。';
+
 function isOpenAIContentLimitError(error) {
   if (!error) {
     return false;
@@ -2921,7 +2924,7 @@ function registerVideoSummary({ button, container, displayName, fileId, mimeType
         }
       }
       if (isOpenAIContentLimitError(error)) {
-        showToast('動画が長すぎるため冒頭 25MB のみ文字起こししました。25MB 以内のファイルをご利用ください。', {
+        showToast(OPENAI_CONTENT_LIMIT_MESSAGE, {
           type: 'warning',
         });
       } else {
@@ -2989,7 +2992,7 @@ function registerAudioTranscript({ button, container, displayName, fileId, mimeT
         }
       }
       if (isOpenAIContentLimitError(error)) {
-        showToast('音声が長すぎるため冒頭 25MB のみ文字起こししました。25MB 以内のファイルをご利用ください。', {
+        showToast(OPENAI_CONTENT_LIMIT_MESSAGE, {
           type: 'warning',
         });
       } else {
