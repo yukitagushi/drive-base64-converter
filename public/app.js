@@ -276,6 +276,14 @@ const imageSummaryRequestState = new Map();
 const videoSummaryRequestState = new Map();
 const audioTranscriptRequestState = new Map();
 const storeSyncRequestState = new Map();
+const mediaAutoSyncHistory = new Map();
+const mediaAutoSyncRunner = {
+  timerId: null,
+  activeStoreId: null,
+  container: null,
+  syncInFlight: false,
+};
+const MEDIA_SYNC_INTERVAL_MS = 30000;
 
 let supabaseBrowserClient = null;
 let supabaseClientSignature = null;
@@ -2497,6 +2505,7 @@ async function toggleStoreFiles(card, button, storeId) {
     container.hidden = true;
     container.innerHTML = '';
     button.textContent = 'ファイル一覧';
+    stopMediaAutoSyncLoop(storeId);
     return;
   }
 
@@ -2510,6 +2519,9 @@ async function toggleStoreFiles(card, button, storeId) {
     container.dataset.listenerBound = '1';
   }
 
+  const { listEl } = ensureStoreFilesElements(container);
+  updateMediaSyncStatusForContainer(container);
+
   try {
     let files = storeFilesCache.get(storeId);
     if (!files) {
@@ -2521,14 +2533,20 @@ async function toggleStoreFiles(card, button, storeId) {
       files = rawFiles.map((row) => normalizeFileRow(row));
       storeFilesCache.set(storeId, files);
     }
-    renderFileList(container, files);
+    renderFileList(listEl, files);
+    updateMediaSyncStatusForContainer(container);
+    startMediaAutoSyncLoop(storeId, container);
     button.textContent = '閉じる';
   } catch (error) {
     console.error(error);
-    container.innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`;
+    const { listEl } = ensureStoreFilesElements(container);
+    if (listEl) {
+      listEl.innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`;
+    }
     button.textContent = '再読み込み';
   } finally {
     button.disabled = false;
+    updateMediaSyncStatusForContainer(container);
   }
 }
 
@@ -2575,19 +2593,7 @@ async function syncPendingFiles({ button, card, storeId }) {
       if (filesContainer.hidden) {
         storeFilesCache.delete(storeId);
       } else {
-        try {
-          const refreshed = await safeFetch(`/api/documents?fileStoreId=${encodeURIComponent(storeId)}`);
-          const rawFiles = Array.isArray(refreshed.items)
-            ? refreshed.items
-            : Array.isArray(refreshed.files)
-            ? refreshed.files
-            : [];
-          const normalized = rawFiles.map((row) => normalizeFileRow(row));
-          storeFilesCache.set(storeId, normalized);
-          renderFileList(filesContainer, normalized);
-        } catch (refreshError) {
-          console.error('同期後のファイル一覧更新に失敗しました:', refreshError);
-        }
+        await refreshStoreFilesView(storeId, filesContainer);
       }
     }
   } catch (error) {
@@ -2600,10 +2606,13 @@ async function syncPendingFiles({ button, card, storeId }) {
   }
 }
 
-function renderFileList(container, files) {
-  container.innerHTML = '';
+function renderFileList(listElement, files) {
+  if (!listElement) {
+    return;
+  }
+  listElement.innerHTML = '';
   if (!files.length) {
-    container.innerHTML = '<p class="empty-hint">まだファイルがありません。</p>';
+    listElement.innerHTML = '<p class="empty-hint">まだファイルがありません。</p>';
     return;
   }
 
@@ -2694,7 +2703,163 @@ function renderFileList(container, files) {
 
     row.appendChild(info);
     row.appendChild(actions);
-    container.appendChild(row);
+    listElement.appendChild(row);
+  }
+}
+
+function ensureStoreFilesElements(container) {
+  if (!container) {
+    return { statusEl: null, listEl: null };
+  }
+  let statusEl = container.querySelector('.media-sync-status');
+  if (!statusEl) {
+    statusEl = document.createElement('div');
+    statusEl.className = 'media-sync-status';
+    statusEl.style.fontSize = '12px';
+    statusEl.style.color = '#555';
+    statusEl.style.margin = '0 0 6px';
+    container.appendChild(statusEl);
+  }
+  let listEl = container.querySelector('.media-sync-list');
+  if (!listEl) {
+    listEl = document.createElement('div');
+    listEl.className = 'media-sync-list';
+    container.appendChild(listEl);
+  }
+  return { statusEl, listEl };
+}
+
+function updateMediaSyncStatusForContainer(container) {
+  if (!container || !container.isConnected) {
+    return;
+  }
+  const { statusEl } = ensureStoreFilesElements(container);
+  if (!statusEl) {
+    return;
+  }
+  const storeId = container.dataset.storeId || '';
+  const history = mediaAutoSyncHistory.get(storeId) || null;
+  const isActive = mediaAutoSyncRunner.activeStoreId === storeId;
+  const isRunning = isActive && mediaAutoSyncRunner.syncInFlight;
+
+  if (isRunning) {
+    statusEl.textContent = '🔄 AI自動解析中…（音声・動画・画像を順次処理しています）';
+    statusEl.dataset.state = 'running';
+    return;
+  }
+
+  if (history) {
+    const icon = history.pendingCount > 0 ? '🟡' : '✅';
+    statusEl.textContent = `${icon} AI自動解析完了 / 今回: ${history.processedCount}件（成功 ${history.succeeded} / 失敗 ${history.failed}） / 残り: ${history.pendingCount}件`;
+    statusEl.dataset.state = history.pendingCount > 0 ? 'pending' : 'complete';
+    return;
+  }
+
+  statusEl.textContent = '⏸ AI自動解析待機中';
+  statusEl.dataset.state = 'idle';
+}
+
+function startMediaAutoSyncLoop(storeId, container) {
+  if (!storeId || !container || !container.isConnected) {
+    return;
+  }
+  stopMediaAutoSyncLoop();
+  mediaAutoSyncRunner.activeStoreId = storeId;
+  mediaAutoSyncRunner.container = container;
+  mediaAutoSyncRunner.syncInFlight = false;
+  updateMediaSyncStatusForContainer(container);
+  mediaAutoSyncRunner.timerId = setInterval(runMediaAutoSyncTick, MEDIA_SYNC_INTERVAL_MS);
+  runMediaAutoSyncTick();
+}
+
+function stopMediaAutoSyncLoop(storeId) {
+  if (storeId && mediaAutoSyncRunner.activeStoreId && mediaAutoSyncRunner.activeStoreId !== storeId) {
+    return;
+  }
+  if (mediaAutoSyncRunner.timerId) {
+    clearInterval(mediaAutoSyncRunner.timerId);
+  }
+  mediaAutoSyncRunner.timerId = null;
+  const previousContainer = mediaAutoSyncRunner.container;
+  mediaAutoSyncRunner.activeStoreId = null;
+  mediaAutoSyncRunner.container = null;
+  mediaAutoSyncRunner.syncInFlight = false;
+  if (previousContainer && previousContainer.isConnected) {
+    updateMediaSyncStatusForContainer(previousContainer);
+  }
+}
+
+async function runMediaAutoSyncTick() {
+  const storeId = mediaAutoSyncRunner.activeStoreId;
+  const container = mediaAutoSyncRunner.container;
+  if (!storeId || !container || container.hidden || !container.isConnected) {
+    if (storeId) {
+      stopMediaAutoSyncLoop(storeId);
+    }
+    return;
+  }
+  if (mediaAutoSyncRunner.syncInFlight) {
+    return;
+  }
+  mediaAutoSyncRunner.syncInFlight = true;
+  updateMediaSyncStatusForContainer(container);
+
+  try {
+    const response = await safeFetch('/api/gemini-sync-media', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileStoreId: storeId }),
+    });
+
+    if (response?.success) {
+      const lastResult = {
+        processedCount: Number(response.processedCount || 0),
+        succeeded: Number(response.succeeded || 0),
+        failed: Number(response.failed || 0),
+        pendingCount: Number(response.pendingCount || 0),
+        lastRunAt: new Date().toISOString(),
+      };
+      mediaAutoSyncHistory.set(storeId, lastResult);
+      updateMediaSyncStatusForContainer(container);
+
+      if (lastResult.processedCount > 0) {
+        await refreshStoreFilesView(storeId, container);
+      }
+    } else {
+      console.warn('メディア自動同期 API が失敗しました:', response);
+    }
+  } catch (error) {
+    console.error('メディア自動同期リクエストに失敗しました:', error);
+    if (error?.status === 401 || error?.status === 403) {
+      stopMediaAutoSyncLoop(mediaAutoSyncRunner.activeStoreId);
+    }
+  } finally {
+    mediaAutoSyncRunner.syncInFlight = false;
+    if (mediaAutoSyncRunner.container && mediaAutoSyncRunner.container.isConnected) {
+      updateMediaSyncStatusForContainer(mediaAutoSyncRunner.container);
+    }
+  }
+}
+
+async function refreshStoreFilesView(storeId, container) {
+  if (!storeId || !container || container.hidden || !container.isConnected) {
+    return;
+  }
+  try {
+    const refreshed = await safeFetch(`/api/documents?fileStoreId=${encodeURIComponent(storeId)}`);
+    const rawFiles = Array.isArray(refreshed.items)
+      ? refreshed.items
+      : Array.isArray(refreshed.files)
+      ? refreshed.files
+      : [];
+    const normalized = rawFiles.map((row) => normalizeFileRow(row));
+    storeFilesCache.set(storeId, normalized);
+    const { listEl } = ensureStoreFilesElements(container);
+    renderFileList(listEl, normalized);
+  } catch (error) {
+    console.error('自動同期後のファイル一覧更新に失敗しました:', error);
+  } finally {
+    updateMediaSyncStatusForContainer(container);
   }
 }
 
