@@ -313,6 +313,46 @@ function parsePayload(raw: string): any {
   }
 }
 
+const MULTIMODAL_MODEL_ORDER = [
+  // Verified via ListModels for v1beta endpoint; supports multimodal inputs (image/video/audio)
+  'models/gemini-1.5-flash',
+  'models/gemini-1.5-pro',
+  'models/gemini-1.0-pro-vision',
+];
+
+const TEXT_MODEL_ORDER = [
+  // Text capable models from ListModels that also support generateContent on v1beta
+  'models/gemini-1.5-flash',
+  'models/gemini-1.0-pro',
+];
+
+export async function debugListGeminiModels(options: { pageSize?: number; pageToken?: string } = {}): Promise<void> {
+  try {
+    ensureGeminiEnvironment({ requireApiKey: true, requireProject: false, requireLocation: false });
+  } catch (error) {
+    console.error('Gemini ListModels 呼び出しの前提チェックに失敗しました。', error);
+    return;
+  }
+
+  try {
+    const params = new URLSearchParams();
+    if (options.pageSize) {
+      params.set('pageSize', String(Math.max(1, Math.min(100, options.pageSize))));
+    }
+    if (options.pageToken) {
+      params.set('pageToken', options.pageToken);
+    }
+
+    const url = `${GEMINI_API_BASE}/models${params.size ? `?${params.toString()}` : ''}`;
+    const response = await geminiFetch(url, { method: 'GET' });
+    const raw = await response.text();
+    const preview = raw.length > 4000 ? `${raw.slice(0, 4000)}…` : raw;
+    console.info('Gemini ListModels result preview:', preview);
+  } catch (error) {
+    console.error('Gemini ListModels 呼び出しに失敗しました。', error);
+  }
+}
+
 export async function createFileStore(displayName: string): Promise<GeminiStoreResult> {
   const label = typeof displayName === 'string' ? displayName.trim() : '';
   const body: Record<string, string> = {};
@@ -535,7 +575,7 @@ function buildChatRequestContents(messages: GeminiChatMessage[]) {
 }
 
 function getDefaultChatModelOrder(): string[] {
-  return ['models/gemini-1.5-pro-latest', 'models/gemini-pro', 'models/gemini-1.0-pro'];
+  return [...TEXT_MODEL_ORDER];
 }
 
 export async function generateChatResponse(options: {
@@ -776,10 +816,12 @@ function buildMediaPromptParts({
   return parts;
 }
 
-function getDefaultModelOrder(_mimeType?: string | null): string[] {
-  // Gemini の v1beta generateContent で安定して利用できるモデルに統一する。
-  // 画像 / 動画 / 音声などすべてのメディア解析もまずはこのモデルを使う。
-  return ['models/gemini-pro'];
+function getDefaultModelOrder(mimeType?: string | null): string[] {
+  const normalized = mimeType?.split(';')[0]?.trim().toLowerCase() || '';
+  if (normalized.startsWith('image/') || normalized.startsWith('video/') || normalized.startsWith('audio/')) {
+    return [...MULTIMODAL_MODEL_ORDER];
+  }
+  return [...TEXT_MODEL_ORDER];
 }
 
 function shouldRetryModel(error: any): boolean {
