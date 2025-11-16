@@ -1683,21 +1683,39 @@ async function loadSession() {
 
 function applySessionUpdate(nextSession, threads) {
   if (nextSession && typeof nextSession === 'object') {
-    const previousThread = sessionState.threadId;
+    const previousOfficeId = sessionState.officeId;
+    const previousStaffId = sessionState.staffId;
     sessionState.organizationId = nextSession.organizationId || null;
     sessionState.officeId = nextSession.officeId || null;
     sessionState.staffId = nextSession.staffId || null;
-    sessionState.threadId = nextSession.threadId || null;
     if (typeof nextSession.supabaseConfigured === 'boolean') {
       sessionState.supabaseConfigured = nextSession.supabaseConfigured;
     }
 
-    if (previousThread !== sessionState.threadId) {
-      ensureActiveThread(sessionState.threadId, { fetchIfMissing: Boolean(sessionState.threadId) });
-    } else if (sessionState.threadId && !activeThreadId) {
-      ensureActiveThread(sessionState.threadId, { fetchIfMissing: false });
+    const officeChanged = previousOfficeId !== sessionState.officeId;
+    const staffChanged = previousStaffId !== sessionState.staffId;
+    let resolvedThreadId = nextSession.threadId || null;
+
+    if (!resolvedThreadId && !officeChanged && !staffChanged && activeThreadId) {
+      resolvedThreadId = activeThreadId;
+    }
+
+    sessionState.threadId = resolvedThreadId;
+
+    if (resolvedThreadId) {
+      if (resolvedThreadId !== activeThreadId || !threadMessagesCache.has(resolvedThreadId)) {
+        ensureActiveThread(resolvedThreadId, { fetchIfMissing: true, forceReload: false });
+      } else {
+        updateActiveThreadTitle();
+      }
     } else {
-      updateActiveThreadTitle();
+      const shouldClearConversation = officeChanged || staffChanged || !activeThreadId;
+      if (shouldClearConversation) {
+        ensureActiveThread(null, { fetchIfMissing: false });
+      } else {
+        sessionState.threadId = activeThreadId;
+        updateActiveThreadTitle();
+      }
     }
   }
 
@@ -2139,10 +2157,11 @@ async function onChatSubmit(event) {
   setStatus('Gemini が応答を生成中...');
 
   try {
+    const currentThreadId = activeThreadId || sessionState.threadId || null;
     const data = await safeFetch('/api/chat', {
       method: 'POST',
       body: JSON.stringify({
-        threadId: sessionState.threadId,
+        threadId: currentThreadId,
         message: text,
       }),
     });
@@ -2152,7 +2171,7 @@ async function onChatSubmit(event) {
     }
 
     const messages = Array.isArray(data.messages) ? data.messages : [];
-    const threadId = data.threadId || sessionState.threadId;
+    const threadId = data.threadId || currentThreadId;
     if (threadId) {
       sessionState.threadId = threadId;
       ensureActiveThread(threadId, { messages, fetchIfMissing: false, forceReload: false });
