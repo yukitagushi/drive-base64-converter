@@ -314,17 +314,23 @@ function parsePayload(raw: string): any {
   }
 }
 
-const MULTIMODAL_MODEL_ORDER = [
-  // Derived from ListModels for the v1 generateContent endpoint (image/video/audio)
-  'models/gemini-1.5-flash-latest',
-  'models/gemini-1.5-pro-latest',
+const PREFERRED_MULTIMODAL_MODELS = [
+  'models/gemini-1.5-flash',
+  'models/gemini-1.5-pro',
+  'models/gemini-pro-vision',
 ];
 
-const TEXT_MODEL_ORDER = [
-  // Text-focused models confirmed via ListModels for the current API key
-  'models/gemini-1.5-pro-latest',
-  'models/gemini-1.5-flash-latest',
+const PREFERRED_TEXT_MODELS = [
+  'models/gemini-1.5-pro',
+  'models/gemini-1.5-flash',
+  'models/gemini-pro',
+  'models/chat-bison-001',
+  'models/text-bison-001',
 ];
+
+const GEMINI_MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let cachedGenerateContentModels: string[] | null = null;
+let cachedGenerateContentModelsFetchedAt = 0;
 
 export async function debugListGeminiModels(options: { pageSize?: number; pageToken?: string } = {}): Promise<void> {
   try {
@@ -363,6 +369,55 @@ export async function debugListGeminiModels(options: { pageSize?: number; pageTo
   } catch (error) {
     console.error('Gemini ListModels 呼び出しに失敗しました。', error);
   }
+}
+
+async function fetchGenerateContentModelNames(forceRefresh = false): Promise<string[]> {
+  const now = Date.now();
+  if (!forceRefresh && cachedGenerateContentModels && now - cachedGenerateContentModelsFetchedAt < GEMINI_MODEL_CACHE_TTL_MS) {
+    return cachedGenerateContentModels;
+  }
+
+  const discovered: string[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const params = new URLSearchParams();
+    params.set('pageSize', '100');
+    if (pageToken) {
+      params.set('pageToken', pageToken);
+    }
+
+    const url = `${GEMINI_CHAT_BASE}/models${params.size ? `?${params.toString()}` : ''}`;
+    const response = await geminiFetch(url, { method: 'GET' });
+    const raw = await response.text();
+    const payload = parsePayload(raw);
+
+    if (!response.ok) {
+      const message = extractErrorMessage(payload, 'Gemini ListModels に失敗しました。');
+      throw new GeminiApiError(message, { status: response.status, body: payload });
+    }
+
+    const models = Array.isArray(payload?.models) ? payload.models : [];
+    for (const entry of models) {
+      const name = typeof entry?.name === 'string' ? entry.name : null;
+      if (!name) {
+        continue;
+      }
+      const supported = Array.isArray(entry?.supportedGenerationMethods)
+        ? entry.supportedGenerationMethods.map((method: any) => String(method).toLowerCase())
+        : [];
+      const supportsGenerateContent = supported.length === 0 || supported.includes('generatecontent');
+      if (supportsGenerateContent && !discovered.includes(name)) {
+        discovered.push(name);
+      }
+    }
+
+    pageToken = typeof payload?.nextPageToken === 'string' && payload.nextPageToken ? payload.nextPageToken : undefined;
+  } while (pageToken);
+
+  cachedGenerateContentModels = discovered;
+  cachedGenerateContentModelsFetchedAt = now;
+  return discovered;
 }
 
 export async function createFileStore(displayName: string): Promise<GeminiStoreResult> {
@@ -656,7 +711,7 @@ export async function generateChatResponse(options: {
   }
 
   const preferredModel = normalizeModelId(options.model);
-  const defaultModels = getDefaultModelOrder();
+  const defaultModels = await getDefaultModelOrder();
   const orderedModels = (preferredModel
     ? [preferredModel, ...defaultModels]
     : [...defaultModels]
@@ -798,12 +853,32 @@ function buildMediaPromptParts({
   return parts;
 }
 
-function getDefaultModelOrder(mimeType?: string | null): string[] {
-  const normalized = mimeType?.split(';')[0]?.trim().toLowerCase() || '';
-  if (normalized.startsWith('image/') || normalized.startsWith('video/') || normalized.startsWith('audio/')) {
-    return [...MULTIMODAL_MODEL_ORDER];
+async function getDefaultModelOrder(mimeType?: string | null): Promise<string[]> {
+  const available = await fetchGenerateContentModelNames();
+  if (!available.length) {
+    throw new Error('ListModels から利用可能な Gemini モデルを取得できませんでした。');
   }
-  return [...TEXT_MODEL_ORDER];
+
+  const availableSet = new Set(available);
+  const normalized = mimeType?.split(';')[0]?.trim().toLowerCase() || '';
+  const preferred = normalized.startsWith('image/') || normalized.startsWith('video/') || normalized.startsWith('audio/')
+    ? PREFERRED_MULTIMODAL_MODELS
+    : PREFERRED_TEXT_MODELS;
+
+  const ordered: string[] = [];
+  for (const name of preferred) {
+    if (availableSet.has(name) && !ordered.includes(name)) {
+      ordered.push(name);
+    }
+  }
+
+  for (const name of available) {
+    if (!ordered.includes(name)) {
+      ordered.push(name);
+    }
+  }
+
+  return ordered;
 }
 
 function shouldRetryModel(error: any): boolean {
@@ -924,7 +999,7 @@ export async function analyzeFileWithGemini(options: {
   const fallbackList = (options.modelFallbacks || []).map((model) => normalizeModelId(model)).filter(Boolean) as string[];
   const orderedModels = preferred
     ? [preferred, ...fallbackList]
-    : [...getDefaultModelOrder(options.mimeType), ...fallbackList];
+    : [...(await getDefaultModelOrder(options.mimeType)), ...fallbackList];
 
   let lastError: any = null;
   for (const candidate of orderedModels) {
@@ -997,7 +1072,7 @@ export async function analyzeInlineMediaWithGemini(options: {
   const fallbackList = (options.modelFallbacks || []).map((model) => normalizeModelId(model)).filter(Boolean) as string[];
   const orderedModels = preferred
     ? [preferred, ...fallbackList]
-    : [...getDefaultModelOrder(mimeType), ...fallbackList];
+    : [...(await getDefaultModelOrder(mimeType)), ...fallbackList];
 
   let lastError: any = null;
   for (const candidate of orderedModels) {
