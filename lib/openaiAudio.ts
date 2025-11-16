@@ -1,5 +1,6 @@
 const OPENAI_API_BASE = process.env.OPENAI_API_BASE || 'https://api.openai.com/v1';
 const DEFAULT_TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || 'whisper-1';
+const OPENAI_MAX_BYTES = 25 * 1024 * 1024; // 25MB limit documented by OpenAI audio APIs
 
 export class OpenAITranscriptionError extends Error {
   status?: number;
@@ -67,7 +68,17 @@ export async function transcribeWithOpenAI(params: {
 
   const fileName = params.fileName || 'audio';
   const mimeType = params.mimeType || 'application/octet-stream';
-  const buffer = Buffer.isBuffer(params.buffer) ? params.buffer : Buffer.from(params.buffer);
+  let buffer = Buffer.isBuffer(params.buffer) ? params.buffer : Buffer.from(params.buffer);
+
+  if (buffer.length > OPENAI_MAX_BYTES) {
+    console.warn('transcribeWithOpenAI: truncating media for OpenAI limit', {
+      mimeType,
+      fileName,
+      originalBytes: buffer.length,
+      truncatedTo: OPENAI_MAX_BYTES,
+    });
+    buffer = buffer.subarray(0, OPENAI_MAX_BYTES);
+  }
 
   const formData = new FormData();
   const blobSource = new Uint8Array(buffer);

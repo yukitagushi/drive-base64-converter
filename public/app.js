@@ -2726,6 +2726,23 @@ function isAudioMimeType(value) {
   return Boolean(lower) && lower.startsWith('audio/');
 }
 
+function isOpenAIContentLimitError(error) {
+  if (!error) {
+    return false;
+  }
+  if (error.status === 413) {
+    return true;
+  }
+  const body = error.body || {};
+  const candidates = [
+    body?.message,
+    body?.error,
+    body?.openaiError?.message,
+    body?.openaiError?.data?.error?.message,
+  ];
+  return candidates.some((value) => typeof value === 'string' && value.includes('Maximum content size limit'));
+}
+
 function isMediaMimeType(value) {
   const lower = normalizeMimeTypeValue(value).toLowerCase();
   if (!lower) {
@@ -2903,7 +2920,13 @@ function registerVideoSummary({ button, container, displayName, fileId, mimeType
           console.error('openaiError:', error.body.openaiError);
         }
       }
-      showToast('動画文字起こしに失敗しました。', { type: 'error' });
+      if (isOpenAIContentLimitError(error)) {
+        showToast('動画が長すぎるため冒頭 25MB のみ文字起こししました。25MB 以内のファイルをご利用ください。', {
+          type: 'warning',
+        });
+      } else {
+        showToast('動画文字起こしに失敗しました。', { type: 'error' });
+      }
     })
     .finally(() => {
       videoSummaryRequestState.delete(fileId);
@@ -2965,7 +2988,13 @@ function registerAudioTranscript({ button, container, displayName, fileId, mimeT
           console.error('openaiError:', error.body.openaiError);
         }
       }
-      showToast('音声文字起こしに失敗しました。', { type: 'error' });
+      if (isOpenAIContentLimitError(error)) {
+        showToast('音声が長すぎるため冒頭 25MB のみ文字起こししました。25MB 以内のファイルをご利用ください。', {
+          type: 'warning',
+        });
+      } else {
+        showToast('音声文字起こしに失敗しました。', { type: 'error' });
+      }
     })
     .finally(() => {
       audioTranscriptRequestState.delete(fileId);
