@@ -776,11 +776,9 @@ function buildMediaPromptParts({
   return parts;
 }
 
-function getDefaultModelOrder(mimeType?: string | null): string[] {
-  const normalized = mimeType?.split(';')[0]?.trim().toLowerCase() || '';
-  if (normalized.startsWith('image/') || normalized.startsWith('video/') || normalized.startsWith('audio/')) {
-    return ['models/gemini-pro-vision'];
-  }
+function getDefaultModelOrder(_mimeType?: string | null): string[] {
+  // Gemini の v1beta generateContent で安定して利用できるモデルに統一する。
+  // 画像 / 動画 / 音声などすべてのメディア解析もまずはこのモデルを使う。
   return ['models/gemini-pro'];
 }
 
