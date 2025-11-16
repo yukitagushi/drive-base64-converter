@@ -5,6 +5,7 @@ import {
   GeminiApiError,
 } from './gemini';
 import { transcribeWithOpenAI } from './openaiAudio';
+import { ensureStorageBucket } from './storage';
 
 export const SUMMARY_DESCRIPTION = 'Gemini によるメディア解析テキストです。';
 export const SUMMARY_MIME_TYPE = 'text/plain';
@@ -15,6 +16,9 @@ const AUDIO_TRANSCRIPT_HEADING = '# OpenAI 音声文字起こし';
 const VIDEO_TRANSCRIPT_HEADING = '# OpenAI 動画音声文字起こし';
 const DEFAULT_TRANSCRIPT_LANGUAGE = process.env.OPENAI_TRANSCRIPT_LANGUAGE || 'ja';
 const DEFAULT_STORAGE_BUCKET_CANDIDATES = ['file-store-files', 'gemini-upload-cache'];
+const SUMMARY_STORAGE_BUCKET =
+  process.env.FILE_SUMMARY_STORAGE_BUCKET || DEFAULT_STORAGE_BUCKET_CANDIDATES[0];
+const SUMMARY_STORAGE_SIZE_LIMIT = 60 * 1024 * 1024;
 const UNREGISTERED_SENTINELS = new Set(['', 'EMPTY']);
 const DOCUMENT_MIME_PREFIXES = ['text/'];
 const DOCUMENT_MIME_TYPES = new Set([
@@ -50,6 +54,8 @@ export interface SummaryRecord {
   id: string;
   displayName: string;
   geminiFileName: string | null;
+  storageBucket?: string | null;
+  storagePath?: string | null;
 }
 
 export interface EnsureMediaSummaryResult {
@@ -168,6 +174,25 @@ function stripExtension(filename: string): string {
   return filename.slice(0, idx);
 }
 
+function sanitizeStorageFileName(name: string): string {
+  const normalized = String(name || '')
+    .replace(/^[\\/]+/, '')
+    .replace(/[\\]+/g, '/');
+  const segments = normalized.split('/');
+  const lastSegment = segments[segments.length - 1] || 'file';
+  const cleaned = lastSegment.replace(/[^a-zA-Z0-9._-]+/g, '_').trim();
+  const truncated = cleaned.slice(-160);
+  return truncated || 'file';
+}
+
+function createSummaryStoragePath(storeId: string, displayName: string): string {
+  const safeStoreId = String(storeId || 'store').replace(/[^a-zA-Z0-9_-]+/g, '_');
+  const safeName = sanitizeStorageFileName(displayName);
+  const timePart = Date.now().toString(36);
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `${safeStoreId}/${timePart}-${randomPart}-${safeName}`;
+}
+
 function createMediaAnalysisSummary(originalName: string, analysis: any): string {
   const lines: string[] = [];
   lines.push('# Gemini メディア解析レポート');
@@ -224,6 +249,33 @@ function createTranscriptDocument(options: {
   }
 
   return lines.join('\n');
+}
+
+async function persistSummaryBufferToStorage(params: {
+  admin: any;
+  fileStoreId: string;
+  displayName: string;
+  buffer: Buffer;
+  mimeType: string;
+  preferredBucket?: string | null;
+}): Promise<{ bucket: string; path: string }> {
+  const bucketCandidates = [params.preferredBucket, SUMMARY_STORAGE_BUCKET, ...DEFAULT_STORAGE_BUCKET_CANDIDATES];
+  const bucket = bucketCandidates.find((value) => value && value.trim())?.trim() || 'file-store-files';
+  const path = createSummaryStoragePath(params.fileStoreId, params.displayName);
+
+  await ensureStorageBucket({ bucket, admin: params.admin, sizeLimitBytes: SUMMARY_STORAGE_SIZE_LIMIT });
+
+  const { error } = await params.admin.storage.from(bucket).upload(path, params.buffer, {
+    upsert: true,
+    cacheControl: '3600',
+    contentType: params.mimeType || 'text/plain',
+  });
+
+  if (error) {
+    throw new SupabaseActionError('storage', 'upload', error);
+  }
+
+  return { bucket, path };
 }
 
 async function bufferFromUnknown(data: any): Promise<Buffer> {
@@ -419,7 +471,7 @@ export async function fetchStoreRow(admin: any, storeId: string): Promise<StoreR
 async function findExistingSummary(admin: any, storeId: string, displayName: string): Promise<SummaryRecord | null> {
   const { data, error } = await admin
     .from('file_store_files')
-    .select('id, display_name, gemini_file_name')
+    .select('id, display_name, gemini_file_name, storage_bucket, storage_path, storage_object_path')
     .eq('file_store_id', storeId)
     .eq('display_name', displayName)
     .maybeSingle();
@@ -436,6 +488,8 @@ async function findExistingSummary(admin: any, storeId: string, displayName: str
     id: data.id,
     displayName: data.display_name,
     geminiFileName: data.gemini_file_name,
+    storageBucket: data.storage_bucket ?? null,
+    storagePath: data.storage_path || data.storage_object_path || null,
   };
 }
 
@@ -450,6 +504,9 @@ async function insertSummaryRecord(
     staffId: string;
     description?: string | null;
     mimeType?: string | null;
+    storageBucket?: string | null;
+    storagePath?: string | null;
+    storageObjectPath?: string | null;
   },
 ): Promise<SummaryRecord> {
   const insertPayload = {
@@ -460,12 +517,15 @@ async function insertSummaryRecord(
     size_bytes: params.summaryBuffer.length,
     mime_type: params.mimeType ?? SUMMARY_MIME_TYPE,
     uploaded_by: params.staffId,
+    storage_bucket: params.storageBucket ?? null,
+    storage_path: params.storagePath ?? null,
+    storage_object_path: params.storageObjectPath ?? params.storagePath ?? null,
   };
 
   const { data: inserted, error } = await admin
     .from('file_store_files')
     .insert(insertPayload)
-    .select('id, display_name, gemini_file_name')
+    .select('id, display_name, gemini_file_name, storage_bucket, storage_path, storage_object_path')
     .single();
 
   if (error) {
@@ -488,6 +548,8 @@ async function insertSummaryRecord(
     id: inserted.id,
     displayName: inserted.display_name,
     geminiFileName: inserted.gemini_file_name,
+    storageBucket: inserted.storage_bucket ?? null,
+    storagePath: inserted.storage_path || inserted.storage_object_path || null,
   };
 }
 
@@ -652,6 +714,15 @@ async function ensureTranscriptSummaryForFile(
   });
   const summaryBuffer = Buffer.from(transcriptDocument, 'utf8');
 
+  const persistedStorage = await persistSummaryBufferToStorage({
+    admin: params.admin,
+    fileStoreId: params.fileRow.file_store_id,
+    displayName: summaryName,
+    buffer: summaryBuffer,
+    mimeType: SUMMARY_MIME_TYPE,
+    preferredBucket: params.fileRow.storage_bucket,
+  });
+
   const uploadResult = await uploadFileToStore({
     storeName: params.storeRow.gemini_store_name,
     fileBuffer: summaryBuffer,
@@ -668,6 +739,9 @@ async function ensureTranscriptSummaryForFile(
     staffId: params.staffId,
     description: options.description,
     mimeType: SUMMARY_MIME_TYPE,
+    storageBucket: persistedStorage.bucket,
+    storagePath: persistedStorage.path,
+    storageObjectPath: persistedStorage.path,
   });
 
   await markOriginalFileAsProcessed(

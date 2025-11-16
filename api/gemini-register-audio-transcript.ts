@@ -149,12 +149,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       staffId: staff.id,
     });
 
+    const summaryFile = result.summaryFile;
+
     if (result.status === 'already-exists') {
       respond(res, 200, {
         success: true,
         alreadyProcessed: true,
         fileId: fileRow.id,
-        summaryFile: result.summaryFile,
+        summaryFile,
       });
       return;
     }
@@ -162,7 +164,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     respond(res, 200, {
       success: true,
       fileId: fileRow.id,
-      summaryFile: result.summaryFile,
+      summaryFile,
     });
   } catch (error: any) {
     const status =
