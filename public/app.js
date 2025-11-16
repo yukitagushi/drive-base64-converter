@@ -277,6 +277,20 @@ const videoSummaryRequestState = new Map();
 const audioTranscriptRequestState = new Map();
 const storeSyncRequestState = new Map();
 const mediaAutoSyncHistory = new Map();
+const documentAutoSyncHistory = new Map();
+const documentSyncCompletedStores = new Set();
+const DOCUMENT_MIME_TYPES = [
+  'text/plain',
+  'text/markdown',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+];
+const DOCUMENT_MIME_TYPE_SET = new Set(DOCUMENT_MIME_TYPES.map((type) => type.toLowerCase()));
 const mediaAutoSyncRunner = {
   timerId: null,
   activeStoreId: null,
@@ -2414,6 +2428,14 @@ async function onUploadFile(event) {
       grouped.forEach((items, targetStoreId) => {
         const existingList = storeFilesCache.get(targetStoreId) || [];
         storeFilesCache.set(targetStoreId, [...items, ...existingList]);
+        if (
+          items.some(
+            (entry) =>
+              isDocumentMimeType(entry.mimeType || entry.mime_type) && !entry.geminiFileName && !entry.gemini_file_name,
+          )
+        ) {
+          markDocumentSyncPending(targetStoreId);
+        }
       });
     } else {
       storeFilesCache.delete(storeId);
@@ -2533,6 +2555,7 @@ async function toggleStoreFiles(card, button, storeId) {
       files = rawFiles.map((row) => normalizeFileRow(row));
       storeFilesCache.set(storeId, files);
     }
+    updateDocumentSyncCompletionFromFiles(storeId, files);
     renderFileList(listEl, files);
     updateMediaSyncStatusForContainer(container);
     startMediaAutoSyncLoop(storeId, container);
@@ -2739,6 +2762,7 @@ function updateMediaSyncStatusForContainer(container) {
   }
   const storeId = container.dataset.storeId || '';
   const history = mediaAutoSyncHistory.get(storeId) || null;
+  const docHistory = documentAutoSyncHistory.get(storeId) || null;
   const isActive = mediaAutoSyncRunner.activeStoreId === storeId;
   const isRunning = isActive && mediaAutoSyncRunner.syncInFlight;
 
@@ -2750,8 +2774,16 @@ function updateMediaSyncStatusForContainer(container) {
 
   if (history) {
     const icon = history.pendingCount > 0 ? '🟡' : '✅';
-    statusEl.textContent = `${icon} AI自動解析完了 / 今回: ${history.processedCount}件（成功 ${history.succeeded} / 失敗 ${history.failed}） / 残り: ${history.pendingCount}件`;
+    const docSuffix = docHistory ? ` / 文書残り: ${docHistory.pendingCount}件` : '';
+    statusEl.textContent = `${icon} AI自動解析完了 / 今回: ${history.processedCount}件（成功 ${history.succeeded} / 失敗 ${history.failed}） / 残り: ${history.pendingCount}件${docSuffix}`;
     statusEl.dataset.state = history.pendingCount > 0 ? 'pending' : 'complete';
+    return;
+  }
+
+  if (docHistory) {
+    const icon = docHistory.pendingCount > 0 ? '🟡' : '✅';
+    statusEl.textContent = `${icon} 文書同期状況: 残り ${docHistory.pendingCount}件 / 前回処理 ${docHistory.processedCount}件`;
+    statusEl.dataset.state = docHistory.pendingCount > 0 ? 'pending' : 'complete';
     return;
   }
 
@@ -2767,6 +2799,7 @@ function startMediaAutoSyncLoop(storeId, container) {
   mediaAutoSyncRunner.activeStoreId = storeId;
   mediaAutoSyncRunner.container = container;
   mediaAutoSyncRunner.syncInFlight = false;
+  markDocumentSyncPending(storeId);
   updateMediaSyncStatusForContainer(container);
   mediaAutoSyncRunner.timerId = setInterval(runMediaAutoSyncTick, MEDIA_SYNC_INTERVAL_MS);
   runMediaAutoSyncTick();
@@ -2842,8 +2875,46 @@ async function runMediaAutoSyncTick() {
   }
 }
 
+function markDocumentSyncPending(storeId) {
+  if (!storeId) {
+    return;
+  }
+  documentSyncCompletedStores.delete(storeId);
+}
+
+function markDocumentSyncComplete(storeId) {
+  if (!storeId) {
+    return;
+  }
+  documentSyncCompletedStores.add(storeId);
+}
+
+function hasPendingDocumentEntries(files) {
+  if (!Array.isArray(files)) {
+    return false;
+  }
+  return files.some((file) => {
+    const mimeType = file?.mimeType || file?.mime_type || '';
+    const geminiName = file?.geminiFileName || file?.gemini_file_name || '';
+    return isDocumentMimeType(mimeType) && !geminiName;
+  });
+}
+
+function updateDocumentSyncCompletionFromFiles(storeId, files) {
+  if (!storeId) {
+    return;
+  }
+  if (hasPendingDocumentEntries(files)) {
+    markDocumentSyncPending(storeId);
+  }
+}
+
 async function syncPendingDocumentsForStore(storeId, container) {
   if (!storeId) {
+    return;
+  }
+
+  if (documentSyncCompletedStores.has(storeId)) {
     return;
   }
 
@@ -2855,21 +2926,34 @@ async function syncPendingDocumentsForStore(storeId, container) {
     });
 
     if (response?.success) {
-      console.log('ドキュメント自動同期結果:', {
+      const lastResult = {
         processedCount: Number(response.processedCount || 0),
         succeeded: Number(response.succeeded || 0),
         failed: Number(response.failed || 0),
         pendingCount: Number(response.pendingCount || 0),
         lastRunAt: new Date().toISOString(),
-      });
+      };
+      documentAutoSyncHistory.set(storeId, lastResult);
+
+      console.log('ドキュメント自動同期結果:', lastResult);
+
+      if (lastResult.pendingCount <= 0) {
+        markDocumentSyncComplete(storeId);
+      } else {
+        markDocumentSyncPending(storeId);
+      }
 
       if (
-        Number(response.processedCount || 0) > 0 &&
+        lastResult.processedCount > 0 &&
         container &&
         container.isConnected &&
         !container.hidden
       ) {
         await refreshStoreFilesView(storeId, container);
+      }
+
+      if (lastResult.pendingCount <= 0 && (mediaAutoSyncHistory.get(storeId)?.pendingCount || 0) <= 0) {
+        stopMediaAutoSyncLoop(storeId);
       }
     } else {
       console.warn('ドキュメント自動同期 API が失敗しました:', response);
@@ -2895,6 +2979,7 @@ async function refreshStoreFilesView(storeId, container) {
       : [];
     const normalized = rawFiles.map((row) => normalizeFileRow(row));
     storeFilesCache.set(storeId, normalized);
+    updateDocumentSyncCompletionFromFiles(storeId, normalized);
     const { listEl } = ensureStoreFilesElements(container);
     renderFileList(listEl, normalized);
   } catch (error) {
@@ -2930,6 +3015,15 @@ function isVideoMimeType(value) {
 function isAudioMimeType(value) {
   const lower = normalizeMimeTypeValue(value).toLowerCase();
   return Boolean(lower) && lower.startsWith('audio/');
+}
+
+function isDocumentMimeType(value) {
+  const lower = normalizeMimeTypeValue(value).toLowerCase();
+  if (!lower) {
+    return false;
+  }
+  const base = lower.split(';')[0].trim();
+  return DOCUMENT_MIME_TYPE_SET.has(base);
 }
 
 const OPENAI_CONTENT_LIMIT_MESSAGE =

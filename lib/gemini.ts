@@ -608,23 +608,26 @@ export async function generateChatResponse(options: {
     throw new Error('Gemini チャットにはユーザーまたはアシスタントのメッセージが必要です。');
   }
 
-  const body: Record<string, any> = {
-    contents,
-  };
-
-  if (systemParts.length || options.systemInstruction) {
-    const parts = [...systemParts];
-    if (options.systemInstruction) {
-      const trimmed = options.systemInstruction.trim();
-      if (trimmed) {
-        parts.unshift({ text: trimmed });
-      }
+  const aggregatedSystemParts = [...systemParts];
+  if (options.systemInstruction) {
+    const trimmed = options.systemInstruction.trim();
+    if (trimmed) {
+      aggregatedSystemParts.unshift({ text: trimmed });
     }
-    body.system_instruction = {
-      role: 'system',
-      parts,
-    };
   }
+
+  const finalContents: any[] = [];
+  if (aggregatedSystemParts.length > 0) {
+    finalContents.push({
+      role: 'system',
+      parts: aggregatedSystemParts,
+    });
+  }
+  finalContents.push(...contents);
+
+  const body: Record<string, any> = {
+    contents: finalContents,
+  };
 
   const generationConfig: Record<string, number> = {};
   if (typeof options.temperature === 'number') {
@@ -641,43 +644,6 @@ export async function generateChatResponse(options: {
   }
   if (Object.keys(generationConfig).length > 0) {
     body.generationConfig = generationConfig;
-  }
-
-  let storeResource: string | null = null;
-  const tools: any[] = [];
-  let toolConfig: Record<string, any> | undefined;
-  const requestedStoreName = typeof options.fileSearch?.storeName === 'string'
-    ? options.fileSearch.storeName.trim()
-    : '';
-
-  if (requestedStoreName) {
-    storeResource = ensureStoreResourceName(requestedStoreName);
-    tools.push({
-      file_search: {
-        file_search_store_names: [storeResource],
-      },
-    });
-
-    const fileSearchConfig: Record<string, any> = {};
-    if (typeof options.fileSearch?.maxChunks === 'number') {
-      fileSearchConfig.max_chunks = options.fileSearch.maxChunks;
-    }
-    if (typeof options.fileSearch?.dynamicThreshold === 'number') {
-      fileSearchConfig.dynamic_retrieval_config = {
-        mode: 'MODE_DYNAMIC',
-        dynamic_threshold: options.fileSearch.dynamicThreshold,
-      };
-    }
-    if (Object.keys(fileSearchConfig).length > 0) {
-      toolConfig = { file_search: fileSearchConfig };
-    }
-  }
-
-  if (tools.length > 0) {
-    body.tools = tools;
-  }
-  if (toolConfig) {
-    body.tool_config = toolConfig;
   }
 
   if (process.env.NODE_ENV !== 'production') {
@@ -729,7 +695,6 @@ export async function generateChatResponse(options: {
         body: typeof raw === 'string' ? raw.slice(0, 512) : raw,
         debugId,
         model,
-        storeResource,
       });
 
       if (!shouldRetryChatModel(geminiError)) {

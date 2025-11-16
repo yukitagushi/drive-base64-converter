@@ -9,6 +9,7 @@ import {
   isAudioMime,
   isImageMime,
   isVideoMime,
+  markOriginalFileAsProcessed,
   serializeGeminiError,
   serializeSupabaseError,
   SupabaseActionError,
@@ -23,6 +24,8 @@ const SYNC_PROCESS_LIMIT = 3;
 const SYNC_FETCH_LIMIT = 12;
 const MIN_IMAGE_SIZE_BYTES = 1024;
 const MACOS_METADATA_PREFIX = '__MACOSX';
+const SKIPPED_MACOS_METADATA = 'SKIPPED_MACOS_METADATA';
+const SKIPPED_TOO_SMALL_IMAGE = 'SKIPPED_TOO_SMALL_IMAGE';
 
 const GEMINI_PENDING_MATCHERS = ['gemini_file_name.is.null', 'gemini_file_name.eq.', 'gemini_file_name.eq.EMPTY'];
 const MIME_PENDING_MATCHERS = ['mime_type.ilike.image/%', 'mime_type.ilike.video/%', 'mime_type.ilike.audio/%'];
@@ -170,22 +173,56 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const displayName = candidate.display_name || '';
       if (displayName.startsWith(MACOS_METADATA_PREFIX)) {
-        results.push({
-          fileId: candidate.id,
-          status: 'skipped',
-          action,
-          reason: 'macos_metadata',
-        });
+        try {
+          await markOriginalFileAsProcessed(admin, candidate.id, SKIPPED_MACOS_METADATA);
+          results.push({
+            fileId: candidate.id,
+            status: 'skipped',
+            action,
+            reason: 'macos_metadata',
+          });
+        } catch (error: any) {
+          failed += 1;
+          const reason = classifySyncError(error);
+          console.error(`${API_NAME} failed to mark macOS metadata file as skipped`, {
+            fileId: candidate.id,
+            reason,
+            error: error?.message || error,
+          });
+          results.push({
+            fileId: candidate.id,
+            status: 'failed',
+            action,
+            reason,
+          });
+        }
         continue;
       }
 
       if (isImage && candidate.size_bytes != null && candidate.size_bytes < MIN_IMAGE_SIZE_BYTES) {
-        results.push({
-          fileId: candidate.id,
-          status: 'skipped',
-          action,
-          reason: 'too_small_image',
-        });
+        try {
+          await markOriginalFileAsProcessed(admin, candidate.id, SKIPPED_TOO_SMALL_IMAGE);
+          results.push({
+            fileId: candidate.id,
+            status: 'skipped',
+            action,
+            reason: 'too_small_image',
+          });
+        } catch (error: any) {
+          failed += 1;
+          const reason = classifySyncError(error);
+          console.error(`${API_NAME} failed to mark tiny image as skipped`, {
+            fileId: candidate.id,
+            reason,
+            error: error?.message || error,
+          });
+          results.push({
+            fileId: candidate.id,
+            status: 'failed',
+            action,
+            reason,
+          });
+        }
         continue;
       }
 
@@ -298,7 +335,7 @@ async function fetchPendingMediaFiles(admin: any, fileStoreId: string, limit: nu
     .eq('file_store_id', fileStoreId)
     .or(PENDING_MEDIA_FILTER)
     .not('display_name', 'ilike', `${MACOS_METADATA_PREFIX}%`)
-    .order('uploaded_at', { ascending: false, nullsFirst: false })
+    .order('uploaded_at', { ascending: true, nullsFirst: true })
     .limit(limit);
 
   if (error) {

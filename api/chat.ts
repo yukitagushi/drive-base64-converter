@@ -539,7 +539,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       chatResult = await generateChatResponse({
         messages: geminiMessages,
         systemInstruction,
-        fileSearch: { storeName: store.gemini_store_name },
       });
     } catch (geminiError: any) {
       const serializedGeminiError = serializeGeminiError(geminiError);
