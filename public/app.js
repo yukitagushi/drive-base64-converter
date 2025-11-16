@@ -2651,14 +2651,14 @@ function renderFileList(container, files) {
     }
 
     if (isVideoMimeType(file.mimeType)) {
-      // 動画解析ボタン: Gemini 動画サマリ API を起動する
+      // 動画解析ボタン: OpenAI 文字起こし API を起動する
       const summarizeVideoBtn = document.createElement('button');
       summarizeVideoBtn.type = 'button';
       summarizeVideoBtn.className = 'btn btn-ghost btn-compact';
       summarizeVideoBtn.dataset.action = 'register-video-summary';
       const isVideoAnalyzing = Boolean(file.id && videoSummaryRequestState.get(file.id));
       summarizeVideoBtn.textContent = isVideoAnalyzing ? '動画解析中…' : '動画解析';
-      summarizeVideoBtn.title = 'Gemini で動画を解析してテキスト化します';
+      summarizeVideoBtn.title = 'OpenAI で動画の音声を文字起こしします';
       if (isVideoAnalyzing) {
         summarizeVideoBtn.disabled = true;
         summarizeVideoBtn.dataset.loading = '1';
@@ -2667,14 +2667,14 @@ function renderFileList(container, files) {
     }
 
     if (isAudioMimeType(file.mimeType)) {
-      // 音声文字起こしボタン: Gemini 音声トランスクリプト API を起動する
+      // 音声文字起こしボタン: OpenAI 音声トランスクリプト API を起動する
       const transcribeBtn = document.createElement('button');
       transcribeBtn.type = 'button';
       transcribeBtn.className = 'btn btn-ghost btn-compact';
       transcribeBtn.dataset.action = 'register-audio-transcript';
       const isTranscribing = Boolean(file.id && audioTranscriptRequestState.get(file.id));
       transcribeBtn.textContent = isTranscribing ? '文字起こし中…' : '文字起こし';
-      transcribeBtn.title = 'Gemini で音声を文字起こしします';
+      transcribeBtn.title = 'OpenAI で音声を文字起こしします';
       if (isTranscribing) {
         transcribeBtn.disabled = true;
         transcribeBtn.dataset.loading = '1';
@@ -2888,19 +2888,22 @@ function registerVideoSummary({ button, container, displayName, fileId, mimeType
 
       const alreadyProcessed = Boolean(response?.alreadyProcessed);
       if (alreadyProcessed) {
-        showToast('この動画はすでに解析済みです。');
+        showToast('この動画はすでに文字起こし済みです。');
       } else if (response?.success) {
-        showToast('動画解析テキストを登録しました。');
+        showToast('動画文字起こしテキストを登録しました。');
       } else {
-        showToast('動画解析の結果を受信しました。');
+        showToast('動画文字起こしの結果を受信しました。');
       }
     })
     .catch((error) => {
-      console.error('動画解析テキストの登録に失敗しました:', error);
+      console.error('動画文字起こしテキストの登録に失敗しました:', error);
       if (error?.body) {
         console.error('register-video-summary error body:', error.body);
+        if (error.body.openaiError) {
+          console.error('openaiError:', error.body.openaiError);
+        }
       }
-      showToast('動画解析に失敗しました。', { type: 'error' });
+      showToast('動画文字起こしに失敗しました。', { type: 'error' });
     })
     .finally(() => {
       videoSummaryRequestState.delete(fileId);
@@ -2958,6 +2961,9 @@ function registerAudioTranscript({ button, container, displayName, fileId, mimeT
       console.error('音声文字起こしの登録に失敗しました:', error);
       if (error?.body) {
         console.error('register-audio-transcript error body:', error.body);
+        if (error.body.openaiError) {
+          console.error('openaiError:', error.body.openaiError);
+        }
       }
       showToast('音声文字起こしに失敗しました。', { type: 'error' });
     })

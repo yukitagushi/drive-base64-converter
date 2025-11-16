@@ -9,6 +9,7 @@ import {
   SupabaseActionError,
 } from '../lib/geminiMediaSummary';
 import { GeminiApiError } from '../lib/gemini';
+import { OpenAITranscriptionError, serializeOpenAIError } from '../lib/openaiAudio';
 import { getSupabaseAdmin } from '../lib/supabaseAdmin';
 import { getSupabaseBearerToken, resolveStaffForRequest } from '../lib/api-auth';
 import { getSupabaseClientWithToken } from '../lib/supabaseClient';
@@ -164,12 +165,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       summaryFile: result.summaryFile,
     });
   } catch (error: any) {
-    const status = error instanceof GeminiApiError ? error.status ?? 500 : 500;
+    const status =
+      error instanceof OpenAITranscriptionError
+        ? error.status ?? 500
+        : error instanceof GeminiApiError
+        ? error.status ?? 500
+        : 500;
     console.error(`${API_NAME} error:`, error);
     respond(res, status, {
       error: 'register_audio_transcript_failed',
       message: error?.message || '音声文字起こしテキストの登録に失敗しました。',
-      geminiError: serializeGeminiError(error instanceof GeminiApiError ? error : null),
+      geminiError: error instanceof GeminiApiError ? serializeGeminiError(error) : null,
+      openaiError: serializeOpenAIError(error),
       supabaseError: error instanceof SupabaseActionError ? serializeSupabaseError(error) : null,
     });
   }

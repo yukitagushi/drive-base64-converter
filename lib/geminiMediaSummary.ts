@@ -4,11 +4,16 @@ import {
   uploadFileToStore,
   GeminiApiError,
 } from './gemini';
+import { transcribeWithOpenAI } from './openaiAudio';
 
 export const SUMMARY_DESCRIPTION = 'Gemini によるメディア解析テキストです。';
 export const SUMMARY_MIME_TYPE = 'text/plain';
-export const AUDIO_TRANSCRIPT_DESCRIPTION = 'Gemini による音声文字起こしテキストです。';
-const AUDIO_TRANSCRIPT_PROMPT = 'この音声の内容をすべて日本語で文字起こししてください。';
+export const AUDIO_TRANSCRIPT_DESCRIPTION = 'OpenAI による音声文字起こしテキストです。';
+export const VIDEO_TRANSCRIPT_DESCRIPTION = 'OpenAI による動画音声の文字起こしテキストです。';
+const TRANSCRIPT_SUFFIX = '-transcript.txt';
+const AUDIO_TRANSCRIPT_HEADING = '# OpenAI 音声文字起こし';
+const VIDEO_TRANSCRIPT_HEADING = '# OpenAI 動画音声文字起こし';
+const DEFAULT_TRANSCRIPT_LANGUAGE = process.env.OPENAI_TRANSCRIPT_LANGUAGE || 'ja';
 const DEFAULT_STORAGE_BUCKET_CANDIDATES = ['file-store-files', 'gemini-upload-cache'];
 const UNREGISTERED_SENTINELS = new Set(['', 'EMPTY']);
 const DOCUMENT_MIME_PREFIXES = ['text/'];
@@ -53,10 +58,15 @@ export interface EnsureMediaSummaryResult {
   summaryFile: SummaryRecord;
 }
 
-export interface EnsureAudioTranscriptResult {
-  status: 'already-exists' | 'created';
-  summaryName: string;
-  summaryFile: SummaryRecord;
+export interface EnsureAudioTranscriptResult extends EnsureMediaSummaryResult {}
+
+interface TranscriptOptions {
+  description: string;
+  heading: string;
+  defaultBaseName: string;
+  fallbackMime: string;
+  language?: string;
+  summarySuffix?: string;
 }
 
 export class SupabaseActionError extends Error {
@@ -196,27 +206,21 @@ function createMediaAnalysisSummary(originalName: string, analysis: any): string
   return lines.join('\n');
 }
 
-function createAudioTranscriptDocument(originalName: string, transcript: string, analysis: any): string {
+function createTranscriptDocument(options: {
+  heading: string;
+  originalName: string;
+  transcript: string;
+}): string {
+  const heading = options.heading || '# OpenAI 文字起こし';
   const lines: string[] = [];
-  lines.push('# Gemini 音声文字起こし');
-  lines.push(`対象ファイル: ${originalName}`);
-  if (analysis?.model) {
-    lines.push(`モデル: ${analysis.model}`);
-  }
+  lines.push(heading);
+  lines.push(`対象ファイル: ${options.originalName}`);
 
-  const cleaned = transcript?.trim() || '';
+  const cleaned = options.transcript?.trim() || '';
   if (cleaned) {
     lines.push('', cleaned);
   } else {
-    lines.push('', '（Gemini から文字起こし結果を取得できませんでした）');
-  }
-
-  if (analysis?.usage) {
-    try {
-      lines.push('', '---', 'トークン使用量:', JSON.stringify(analysis.usage, null, 2));
-    } catch (error) {
-      console.warn('geminiMediaSummary failed to stringify transcript usage payload', error);
-    }
+    lines.push('', '（文字起こし結果を取得できませんでした）');
   }
 
   return lines.join('\n');
@@ -576,7 +580,12 @@ export async function ensureVideoSummaryForFile(params: {
   if (!isVideoMime(params.fileRow.mime_type)) {
     throw new Error('動画ファイルのみ処理できます。');
   }
-  return ensureMediaSummaryForFile(params);
+  return ensureTranscriptSummaryForFile(params, {
+    description: VIDEO_TRANSCRIPT_DESCRIPTION,
+    heading: VIDEO_TRANSCRIPT_HEADING,
+    defaultBaseName: 'video',
+    fallbackMime: 'video/mp4',
+  });
 }
 
 export async function ensureAudioTranscriptForFile(params: {
@@ -589,9 +598,27 @@ export async function ensureAudioTranscriptForFile(params: {
   if (!isAudioMime(params.fileRow.mime_type)) {
     throw new Error('音声ファイルのみ処理できます。');
   }
+  return ensureTranscriptSummaryForFile(params, {
+    description: AUDIO_TRANSCRIPT_DESCRIPTION,
+    heading: AUDIO_TRANSCRIPT_HEADING,
+    defaultBaseName: 'audio',
+    fallbackMime: 'audio/mpeg',
+  });
+}
 
-  const baseName = stripExtension(params.fileRow.display_name || 'audio') || 'audio';
-  const summaryName = `${baseName}-transcript.txt`;
+async function ensureTranscriptSummaryForFile(
+  params: {
+    admin: any;
+    supabase: any;
+    fileRow: FileRow;
+    storeRow: StoreRow;
+    staffId: string;
+  },
+  options: TranscriptOptions,
+): Promise<EnsureAudioTranscriptResult> {
+  const summarySuffix = options.summarySuffix || TRANSCRIPT_SUFFIX;
+  const baseName = stripExtension(params.fileRow.display_name || options.defaultBaseName) || options.defaultBaseName;
+  const summaryName = `${baseName}${summarySuffix}`;
 
   const existingSummary = await findExistingSummary(params.admin, params.fileRow.file_store_id, summaryName);
   if (existingSummary) {
@@ -611,18 +638,18 @@ export async function ensureAudioTranscriptForFile(params: {
     throw new Error('保存されたファイルに内容がありません。');
   }
 
-  const analysis = await analyzeInlineMediaWithGemini({
+  const transcriptText = await transcribeWithOpenAI({
     buffer: originalBuffer,
-    mimeType: params.fileRow.mime_type || 'audio/mpeg',
-    prompt: AUDIO_TRANSCRIPT_PROMPT,
+    fileName: params.fileRow.display_name || options.defaultBaseName,
+    mimeType: params.fileRow.mime_type || options.fallbackMime,
+    language: options.language || DEFAULT_TRANSCRIPT_LANGUAGE,
   });
 
-  const transcriptText = analysis?.text ? String(analysis.text) : '';
-  const transcriptDocument = createAudioTranscriptDocument(
-    params.fileRow.display_name || baseName,
-    transcriptText,
-    analysis,
-  );
+  const transcriptDocument = createTranscriptDocument({
+    heading: options.heading,
+    originalName: params.fileRow.display_name || baseName,
+    transcript: transcriptText,
+  });
   const summaryBuffer = Buffer.from(transcriptDocument, 'utf8');
 
   const uploadResult = await uploadFileToStore({
@@ -630,7 +657,7 @@ export async function ensureAudioTranscriptForFile(params: {
     fileBuffer: summaryBuffer,
     mimeType: SUMMARY_MIME_TYPE,
     displayName: summaryName,
-    description: AUDIO_TRANSCRIPT_DESCRIPTION,
+    description: options.description,
   });
 
   const summaryRecord = await insertSummaryRecord(params.admin, params.supabase, {
@@ -639,12 +666,17 @@ export async function ensureAudioTranscriptForFile(params: {
     summaryBuffer,
     geminiFileName: uploadResult.geminiFileName || null,
     staffId: params.staffId,
-    description: AUDIO_TRANSCRIPT_DESCRIPTION,
+    description: options.description,
     mimeType: SUMMARY_MIME_TYPE,
   });
 
-  await markOriginalFileAsProcessed(params.admin, params.fileRow.id, summaryRecord.geminiFileName || uploadResult.geminiFileName);
-  params.fileRow.gemini_file_name = summaryRecord.geminiFileName || uploadResult.geminiFileName || params.fileRow.gemini_file_name;
+  await markOriginalFileAsProcessed(
+    params.admin,
+    params.fileRow.id,
+    summaryRecord.geminiFileName || uploadResult.geminiFileName || null,
+  );
+  params.fileRow.gemini_file_name =
+    summaryRecord.geminiFileName || uploadResult.geminiFileName || params.fileRow.gemini_file_name;
 
   return {
     status: 'created',
