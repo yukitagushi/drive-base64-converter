@@ -314,16 +314,15 @@ function parsePayload(raw: string): any {
 }
 
 const MULTIMODAL_MODEL_ORDER = [
-  // Verified via ListModels for v1beta endpoint; supports multimodal inputs (image/video/audio)
-  'models/gemini-1.5-flash',
-  'models/gemini-1.5-pro',
-  'models/gemini-1.0-pro-vision',
+  // Derived from ListModels for v1beta generateContent support (image/video/audio)
+  'models/gemini-1.5-flash-latest',
+  'models/gemini-1.5-pro-latest',
 ];
 
 const TEXT_MODEL_ORDER = [
-  // Text capable models from ListModels that also support generateContent on v1beta
-  'models/gemini-1.5-flash',
-  'models/gemini-1.0-pro',
+  // Text-focused models confirmed via ListModels for the current API key
+  'models/gemini-1.5-pro-latest',
+  'models/gemini-1.5-flash-latest',
 ];
 
 export async function debugListGeminiModels(options: { pageSize?: number; pageToken?: string } = {}): Promise<void> {
@@ -348,6 +347,18 @@ export async function debugListGeminiModels(options: { pageSize?: number; pageTo
     const raw = await response.text();
     const preview = raw.length > 4000 ? `${raw.slice(0, 4000)}…` : raw;
     console.info('Gemini ListModels result preview:', preview);
+
+    try {
+      const payload = JSON.parse(raw);
+      if (Array.isArray(payload?.models)) {
+        const names = payload.models
+          .map((model: any) => (typeof model?.name === 'string' ? model.name : null))
+          .filter(Boolean);
+        console.info('Gemini ListModels names:', names);
+      }
+    } catch (parseError) {
+      console.warn('Gemini ListModels レスポンスの JSON 解析に失敗しました。', parseError);
+    }
   } catch (error) {
     console.error('Gemini ListModels 呼び出しに失敗しました。', error);
   }
@@ -574,10 +585,6 @@ function buildChatRequestContents(messages: GeminiChatMessage[]) {
   return { contents, systemParts };
 }
 
-function getDefaultChatModelOrder(): string[] {
-  return [...TEXT_MODEL_ORDER];
-}
-
 export async function generateChatResponse(options: {
   messages: GeminiChatMessage[];
   model?: string;
@@ -673,7 +680,7 @@ export async function generateChatResponse(options: {
   }
 
   const preferredModel = normalizeModelId(options.model);
-  const defaultModels = getDefaultChatModelOrder();
+  const defaultModels = getDefaultModelOrder();
   const orderedModels = (preferredModel
     ? [preferredModel, ...defaultModels]
     : [...defaultModels]
