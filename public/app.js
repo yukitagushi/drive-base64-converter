@@ -13,6 +13,7 @@ let loginBackButton;
 
 let messageList;
 let chatThreadTitle;
+let chatStoreLabel;
 let chatForm;
 let chatInput;
 let chatSubmitButton;
@@ -88,6 +89,8 @@ let googleHint;
 
 let toastContainer;
 
+let activeFileStoreId = null;
+
 const SUPPORTED_UPLOAD_ACCEPT = [
   'application/pdf',
   'application/msword',
@@ -161,6 +164,16 @@ function cacheDomElements() {
     chatThreadTitle.style.fontWeight = '600';
     chatThreadTitle.style.margin = '0 0 12px';
     messageList.parentElement.insertBefore(chatThreadTitle, messageList);
+  }
+  chatStoreLabel = document.getElementById('chat-store-label');
+  if (!chatStoreLabel && messageList && messageList.parentElement) {
+    chatStoreLabel = document.createElement('div');
+    chatStoreLabel.id = 'chat-store-label';
+    chatStoreLabel.className = 'chat-store-label';
+    chatStoreLabel.style.margin = '0 0 12px';
+    chatStoreLabel.style.fontSize = '0.9rem';
+    chatStoreLabel.style.color = '#555';
+    messageList.parentElement.insertBefore(chatStoreLabel, messageList);
   }
   chatForm = document.getElementById('chat-form');
   chatInput = document.getElementById('chat-input');
@@ -239,6 +252,7 @@ function cacheDomElements() {
   googleHint = document.getElementById('google-hint');
 
   toastContainer = createToastContainer();
+  updateActiveStoreLabel();
 }
 
 async function waitForDom() {
@@ -1894,6 +1908,58 @@ function updateActiveThreadTitle() {
   chatThreadTitle.textContent = getThreadTitle(activeThreadId) || '無題のスレッド';
 }
 
+function updateActiveStoreLabel() {
+  if (!chatStoreLabel) {
+    return;
+  }
+  if (!activeFileStoreId) {
+    chatStoreLabel.textContent = '参照ストアが選択されていません。';
+    chatStoreLabel.dataset.empty = '1';
+    return;
+  }
+  delete chatStoreLabel.dataset.empty;
+  const store = storeCache.find((entry) => entry.id === activeFileStoreId);
+  if (!store) {
+    chatStoreLabel.textContent = '選択中のストアが見つかりません。';
+    return;
+  }
+  const name = store.displayName || store.geminiStoreName || store.id;
+  chatStoreLabel.textContent = `現在の参照ストア: ${name}`;
+}
+
+function updateStoreSelectionHighlight() {
+  if (!storeList) return;
+  const cards = Array.from(storeList.querySelectorAll('.store-card'));
+  for (const card of cards) {
+    if (card.dataset.storeId === activeFileStoreId) {
+      card.classList.add('is-active');
+    } else {
+      card.classList.remove('is-active');
+    }
+  }
+}
+
+function setActiveFileStore(storeId) {
+  const store = storeCache.find((entry) => entry.id === storeId);
+  if (!store) {
+    return;
+  }
+  activeFileStoreId = store.id;
+  updateActiveStoreLabel();
+  updateStoreSelectionHighlight();
+}
+
+function ensureActiveFileStoreSelection() {
+  if (activeFileStoreId && storeCache.some((entry) => entry.id === activeFileStoreId)) {
+    updateActiveStoreLabel();
+    updateStoreSelectionHighlight();
+    return;
+  }
+  activeFileStoreId = storeCache.length ? storeCache[0].id : null;
+  updateActiveStoreLabel();
+  updateStoreSelectionHighlight();
+}
+
 function ensureActiveThread(threadId, options = {}) {
   const { messages = null, fetchIfMissing = true, forceReload = false } = options;
   activeThreadId = threadId || null;
@@ -2163,6 +2229,7 @@ async function onChatSubmit(event) {
       body: JSON.stringify({
         threadId: currentThreadId,
         message: text,
+        fileStoreId: activeFileStoreId || null,
       }),
     });
 
@@ -2246,6 +2313,9 @@ async function loadStores(options = {}) {
     storeCache = [];
     renderStores();
     updateStoreSelect({ preserveSelection: false });
+    activeFileStoreId = null;
+    updateActiveStoreLabel();
+    updateStoreSelectionHighlight();
     return;
   }
   storeError.textContent = '';
@@ -2268,12 +2338,14 @@ async function loadStores(options = {}) {
       renderSessionSelectors();
     }
     renderStores();
+    ensureActiveFileStoreSelection();
     updateStoreSelect();
   } catch (error) {
     console.error(error);
     storeError.textContent = error.message;
     storeCache = [];
     renderStores();
+    ensureActiveFileStoreSelection();
     updateStoreSelect();
   } finally {
     delete storeList.dataset.loading;
@@ -2337,6 +2409,9 @@ function renderStores() {
     card.className = 'store-card';
     card.dataset.storeId = store.id;
     card.dataset.geminiStore = store.geminiStoreName;
+    if (activeFileStoreId && activeFileStoreId === store.id) {
+      card.classList.add('is-active');
+    }
 
     const header = document.createElement('div');
     header.className = 'store-card__header';
@@ -2622,20 +2697,24 @@ function handleOpenUploadDialog() {
 
 async function onStoreListClick(event) {
   const button = event.target.closest('button[data-action]');
-  if (!button) return;
-  const card = button.closest('.store-card');
+  const card = event.target.closest('.store-card');
   if (!card) return;
   const storeId = card.dataset.storeId;
   if (!storeId) return;
 
-  if (button.dataset.action === 'sync-pending') {
-    await syncPendingFiles({ button, card, storeId });
+  if (button) {
+    if (button.dataset.action === 'sync-pending') {
+      await syncPendingFiles({ button, card, storeId });
+      return;
+    }
+
+    if (button.dataset.action === 'toggle-files') {
+      await toggleStoreFiles(card, button, storeId);
+    }
     return;
   }
 
-  if (button.dataset.action === 'toggle-files') {
-    await toggleStoreFiles(card, button, storeId);
-  }
+  setActiveFileStore(storeId);
 }
 
 async function toggleStoreFiles(card, button, storeId) {

@@ -541,6 +541,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const requestedThreadId = typeof body.threadId === 'string' ? body.threadId.trim() || null : null;
+    const requestedFileStoreId = typeof body.fileStoreId === 'string' ? body.fileStoreId.trim() || null : null;
+    if (requestedFileStoreId) {
+      catchContext.requestedFileStoreId = requestedFileStoreId;
+    }
 
     try {
       ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
@@ -559,7 +563,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    const store = await resolveFileSearchStore(admin, staff as StaffContext);
+    let store: FileStoreRow | null = null;
+    if (requestedFileStoreId) {
+      const { data, error } = await admin
+        .from('file_stores')
+        .select('id, office_id, organization_id, gemini_store_name, display_name')
+        .eq('id', requestedFileStoreId)
+        .maybeSingle();
+
+      if (!error && data && (!data.office_id || !staff.officeId || data.office_id === staff.officeId)) {
+        store = data as FileStoreRow;
+      } else {
+        logChatError('context', 'Requested file store is not accessible', error || null, {
+          requestedFileStoreId,
+          staffId: staff.id,
+          officeId: staff.officeId,
+        });
+      }
+    }
+
+    if (!store) {
+      store = await resolveFileSearchStore(admin, staff as StaffContext);
+    }
+
     if (!store) {
       logChatError('context', 'No file store available for chat', null, catchContext);
       respond(
