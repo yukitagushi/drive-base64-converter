@@ -14,6 +14,7 @@ let loginBackButton;
 let messageList;
 let chatThreadTitle;
 let chatStoreLabel;
+let chatStoreSelect;
 let chatForm;
 let chatInput;
 let chatSubmitButton;
@@ -165,15 +166,36 @@ function cacheDomElements() {
     chatThreadTitle.style.margin = '0 0 12px';
     messageList.parentElement.insertBefore(chatThreadTitle, messageList);
   }
+  chatStoreSelect = document.getElementById('chat-store-select');
   chatStoreLabel = document.getElementById('chat-store-label');
-  if (!chatStoreLabel && messageList && messageList.parentElement) {
+  if ((!chatStoreSelect || !chatStoreLabel) && messageList && messageList.parentElement) {
+    const container = document.createElement('div');
+    container.className = 'chat-store-selector';
+    container.style.marginBottom = '12px';
+
+    const label = document.createElement('label');
+    label.htmlFor = 'chat-store-select';
+    label.textContent = '参照するストアを選択';
+    label.style.display = 'block';
+    label.style.fontWeight = '600';
+    label.style.marginBottom = '4px';
+
+    chatStoreSelect = document.createElement('select');
+    chatStoreSelect.id = 'chat-store-select';
+    chatStoreSelect.className = 'chat-store-select';
+    chatStoreSelect.style.width = '100%';
+    chatStoreSelect.style.marginBottom = '6px';
+
     chatStoreLabel = document.createElement('div');
     chatStoreLabel.id = 'chat-store-label';
     chatStoreLabel.className = 'chat-store-label';
-    chatStoreLabel.style.margin = '0 0 12px';
     chatStoreLabel.style.fontSize = '0.9rem';
     chatStoreLabel.style.color = '#555';
-    messageList.parentElement.insertBefore(chatStoreLabel, messageList);
+
+    container.appendChild(label);
+    container.appendChild(chatStoreSelect);
+    container.appendChild(chatStoreLabel);
+    messageList.parentElement.insertBefore(container, messageList);
   }
   chatForm = document.getElementById('chat-form');
   chatInput = document.getElementById('chat-input');
@@ -910,6 +932,9 @@ async function init() {
   autoResize(uploadNotesInput);
 
   chatForm.addEventListener('submit', onChatSubmit);
+  if (chatStoreSelect) {
+    chatStoreSelect.addEventListener('change', onChatStoreChange);
+  }
   documentForm.addEventListener('submit', onDocumentSubmit);
   refreshStoresBtn.addEventListener('click', () => loadStores({ force: true }));
 
@@ -1292,6 +1317,10 @@ function clearSessionData() {
   if (submitUploadBtn) {
     submitUploadBtn.disabled = true;
   }
+  activeFileStoreId = null;
+  updateActiveStoreLabel();
+  updateStoreSelectionHighlight();
+  updateChatStoreSelect({ preserveSelection: false });
   resetConversation();
   updateSessionHint();
 }
@@ -1939,6 +1968,29 @@ function updateStoreSelectionHighlight() {
   }
 }
 
+function updateChatStoreSelect(options = {}) {
+  if (!chatStoreSelect) return;
+  const { preserveSelection = true } = options;
+  const previousValue = preserveSelection ? chatStoreSelect.value : '';
+  chatStoreSelect.innerHTML = '<option value="">ストアを選択...</option>';
+  for (const store of storeCache) {
+    const option = document.createElement('option');
+    option.value = store.id;
+    option.textContent = store.displayName || store.geminiStoreName;
+    chatStoreSelect.appendChild(option);
+  }
+
+  let nextValue = '';
+  if (activeFileStoreId && storeCache.some((entry) => entry.id === activeFileStoreId)) {
+    nextValue = activeFileStoreId;
+  } else if (previousValue && storeCache.some((entry) => entry.id === previousValue)) {
+    nextValue = previousValue;
+  }
+
+  chatStoreSelect.value = nextValue;
+  chatStoreSelect.disabled = !storeCache.length;
+}
+
 function setActiveFileStore(storeId) {
   const store = storeCache.find((entry) => entry.id === storeId);
   if (!store) {
@@ -1947,17 +1999,32 @@ function setActiveFileStore(storeId) {
   activeFileStoreId = store.id;
   updateActiveStoreLabel();
   updateStoreSelectionHighlight();
+  updateChatStoreSelect({ preserveSelection: false });
 }
 
 function ensureActiveFileStoreSelection() {
   if (activeFileStoreId && storeCache.some((entry) => entry.id === activeFileStoreId)) {
     updateActiveStoreLabel();
     updateStoreSelectionHighlight();
+    updateChatStoreSelect();
     return;
   }
   activeFileStoreId = storeCache.length ? storeCache[0].id : null;
   updateActiveStoreLabel();
   updateStoreSelectionHighlight();
+  updateChatStoreSelect({ preserveSelection: false });
+}
+
+function onChatStoreChange(event) {
+  const selectedId = event.target.value || null;
+  if (selectedId && storeCache.some((entry) => entry.id === selectedId)) {
+    setActiveFileStore(selectedId);
+    return;
+  }
+  activeFileStoreId = null;
+  updateActiveStoreLabel();
+  updateStoreSelectionHighlight();
+  updateChatStoreSelect({ preserveSelection: false });
 }
 
 function ensureActiveThread(threadId, options = {}) {
@@ -2316,6 +2383,7 @@ async function loadStores(options = {}) {
     activeFileStoreId = null;
     updateActiveStoreLabel();
     updateStoreSelectionHighlight();
+    updateChatStoreSelect({ preserveSelection: false });
     return;
   }
   storeError.textContent = '';
@@ -2333,6 +2401,9 @@ async function loadStores(options = {}) {
       ? data.stores
       : [];
     storeCache = rawItems.map((row) => normalizeStoreRow(row)).filter((item) => item.id && item.geminiStoreName);
+    if (data.currentStoreId && storeCache.some((entry) => entry.id === data.currentStoreId)) {
+      activeFileStoreId = data.currentStoreId;
+    }
     if (data.session) {
       applySessionUpdate(data.session, data.threads);
       renderSessionSelectors();
@@ -2340,6 +2411,7 @@ async function loadStores(options = {}) {
     renderStores();
     ensureActiveFileStoreSelection();
     updateStoreSelect();
+    updateChatStoreSelect();
   } catch (error) {
     console.error(error);
     storeError.textContent = error.message;
@@ -2347,6 +2419,7 @@ async function loadStores(options = {}) {
     renderStores();
     ensureActiveFileStoreSelection();
     updateStoreSelect();
+    updateChatStoreSelect({ preserveSelection: false });
   } finally {
     delete storeList.dataset.loading;
   }
