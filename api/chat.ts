@@ -98,7 +98,7 @@ function applyCors(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Authorization,Content-Type,Accept');
 }
 
@@ -418,6 +418,64 @@ function parseBody(req: VercelRequest): any {
   return {};
 }
 
+async function handleThreadHistoryRequest(
+  req: VercelRequest,
+  res: VercelResponse,
+  admin: ReturnType<typeof getSupabaseAdmin>,
+  staff: StaffContext,
+  catchContext: Record<string, any>,
+): Promise<void> {
+  const query: Record<string, string | string[] | undefined> = (req.query || {}) as any;
+  const rawThreadId =
+    typeof query.threadId === 'string'
+      ? query.threadId
+      : Array.isArray(query.threadId)
+      ? query.threadId[0]
+      : typeof query.thread_id === 'string'
+      ? query.thread_id
+      : Array.isArray(query.thread_id)
+      ? query.thread_id[0]
+      : '';
+  const threadId = (rawThreadId || '').trim();
+  if (!threadId) {
+    respond(res, 400, { error: 'thread_id_required' }, { stage: 'thread_lookup', ...catchContext });
+    return;
+  }
+
+  const { data, error } = await admin
+    .from('chat_threads')
+    .select('id, office_id, staff_id, title, created_at, updated_at')
+    .eq('id', threadId)
+    .maybeSingle();
+
+  if (error && error.code !== 'PGRST116') {
+    const wrapped = new SupabaseQueryError('chat_threads', 'select', error);
+    logChatError('supabase', 'Failed to load requested chat thread', wrapped, { threadId, ...catchContext });
+    throw wrapped;
+  }
+
+  if (!data) {
+    respond(res, 404, { error: 'thread_not_found' }, { stage: 'thread_lookup', ...catchContext });
+    return;
+  }
+
+  if (data.office_id && staff.officeId && data.office_id !== staff.officeId) {
+    respond(res, 403, { error: 'forbidden' }, { stage: 'thread_lookup', ...catchContext });
+    return;
+  }
+
+  catchContext.threadId = threadId;
+
+  const rows = await loadThreadMessages(admin, threadId);
+  const messages = rows.map(mapMessageResponse);
+
+  respond(res, 200, {
+    threadId,
+    thread: mapThreadRow(data as ThreadRow),
+    messages,
+  });
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   applyCors(req, res);
   if (req.method === 'OPTIONS') {
@@ -425,30 +483,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST,OPTIONS');
+  const isGetRequest = req.method === 'GET';
+
+  if (req.method !== 'POST' && !isGetRequest) {
+    res.setHeader('Allow', 'GET,POST,OPTIONS');
     respond(res, 405, { error: 'Method Not Allowed' });
     return;
   }
 
   const catchContext: Record<string, any> = {};
   try {
-    let body: any = {};
-    try {
-      body = parseBody(req);
-    } catch (error: any) {
-      respond(res, 400, { error: '無効な JSON です。' }, { stage: 'parse_body' });
-      return;
-    }
-
-    const message = typeof body.message === 'string' ? body.message.trim() : '';
-    if (!message) {
-      respond(res, 400, { error: 'message は必須です。' }, { stage: 'validate_message' });
-      return;
-    }
-
-    const requestedThreadId = typeof body.threadId === 'string' ? body.threadId.trim() || null : null;
-
     if (!isSupabaseConfigured()) {
       respond(res, 503, { error: 'Supabase が設定されていません。' }, { stage: 'supabase_config' });
       return;
@@ -477,6 +521,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
+    if (isGetRequest) {
+      await handleThreadHistoryRequest(req, res, admin, staff as StaffContext, catchContext);
+      return;
+    }
+
+    let body: any = {};
+    try {
+      body = parseBody(req);
+    } catch (error: any) {
+      respond(res, 400, { error: '無効な JSON です。' }, { stage: 'parse_body' });
+      return;
+    }
+
+    const message = typeof body.message === 'string' ? body.message.trim() : '';
+    if (!message) {
+      respond(res, 400, { error: 'message は必須です。' }, { stage: 'validate_message' });
+      return;
+    }
+
+    const requestedThreadId = typeof body.threadId === 'string' ? body.threadId.trim() || null : null;
+    const requestedFileStoreId = typeof body.fileStoreId === 'string' ? body.fileStoreId.trim() || null : null;
+    if (requestedFileStoreId) {
+      catchContext.requestedFileStoreId = requestedFileStoreId;
+    }
+
     try {
       ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
     } catch (envError: any) {
@@ -494,7 +563,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    const store = await resolveFileSearchStore(admin, staff as StaffContext);
+    let store: FileStoreRow | null = null;
+    if (requestedFileStoreId) {
+      const { data, error } = await admin
+        .from('file_stores')
+        .select('id, office_id, organization_id, gemini_store_name, display_name')
+        .eq('id', requestedFileStoreId)
+        .maybeSingle();
+
+      if (!error && data && (!data.office_id || !staff.officeId || data.office_id === staff.officeId)) {
+        store = data as FileStoreRow;
+      } else {
+        logChatError('context', 'Requested file store is not accessible', error || null, {
+          requestedFileStoreId,
+          staffId: staff.id,
+          officeId: staff.officeId,
+        });
+      }
+    }
+
+    if (!store) {
+      store = await resolveFileSearchStore(admin, staff as StaffContext);
+    }
+
     if (!store) {
       logChatError('context', 'No file store available for chat', null, catchContext);
       respond(

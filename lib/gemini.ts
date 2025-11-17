@@ -1,6 +1,7 @@
 const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com';
 const GEMINI_API_BASE = `${GEMINI_API_ROOT}/v1beta`;
 const GEMINI_UPLOAD_BASE = `${GEMINI_API_ROOT}/upload/v1beta`;
+const GEMINI_CHAT_BASE = `${GEMINI_API_ROOT}/v1beta`;
 
 export interface GeminiEnvironmentConfig {
   apiKey: string;
@@ -313,18 +314,20 @@ function parsePayload(raw: string): any {
   }
 }
 
-const MULTIMODAL_MODEL_ORDER = [
-  // Verified via ListModels for v1beta endpoint; supports multimodal inputs (image/video/audio)
-  'models/gemini-1.5-flash',
-  'models/gemini-1.5-pro',
-  'models/gemini-1.0-pro-vision',
+const PREFERRED_MULTIMODAL_MODELS = [
+  // Gemini 2.5 family supports File Search tools on /v1beta generateContent.
+  'models/gemini-2.5-flash',
+  'models/gemini-2.5-pro',
 ];
 
-const TEXT_MODEL_ORDER = [
-  // Text capable models from ListModels that also support generateContent on v1beta
-  'models/gemini-1.5-flash',
-  'models/gemini-1.0-pro',
+const PREFERRED_TEXT_MODELS = [
+  'models/gemini-2.5-pro',
+  'models/gemini-2.5-flash',
 ];
+
+const GEMINI_MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let cachedGenerateContentModels: string[] | null = null;
+let cachedGenerateContentModelsFetchedAt = 0;
 
 export async function debugListGeminiModels(options: { pageSize?: number; pageToken?: string } = {}): Promise<void> {
   try {
@@ -343,14 +346,76 @@ export async function debugListGeminiModels(options: { pageSize?: number; pageTo
       params.set('pageToken', options.pageToken);
     }
 
-    const url = `${GEMINI_API_BASE}/models${params.size ? `?${params.toString()}` : ''}`;
+    const url = `${GEMINI_CHAT_BASE}/models${params.size ? `?${params.toString()}` : ''}`;
     const response = await geminiFetch(url, { method: 'GET' });
     const raw = await response.text();
     const preview = raw.length > 4000 ? `${raw.slice(0, 4000)}…` : raw;
     console.info('Gemini ListModels result preview:', preview);
+
+    try {
+      const payload = JSON.parse(raw);
+      if (Array.isArray(payload?.models)) {
+        const names = payload.models
+          .map((model: any) => (typeof model?.name === 'string' ? model.name : null))
+          .filter(Boolean);
+        console.info('Gemini ListModels names:', names);
+      }
+    } catch (parseError) {
+      console.warn('Gemini ListModels レスポンスの JSON 解析に失敗しました。', parseError);
+    }
   } catch (error) {
     console.error('Gemini ListModels 呼び出しに失敗しました。', error);
   }
+}
+
+async function fetchGenerateContentModelNames(forceRefresh = false): Promise<string[]> {
+  const now = Date.now();
+  if (!forceRefresh && cachedGenerateContentModels && now - cachedGenerateContentModelsFetchedAt < GEMINI_MODEL_CACHE_TTL_MS) {
+    return cachedGenerateContentModels;
+  }
+
+  const discovered: string[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const params = new URLSearchParams();
+    params.set('pageSize', '100');
+    if (pageToken) {
+      params.set('pageToken', pageToken);
+    }
+
+    const url = `${GEMINI_CHAT_BASE}/models${params.size ? `?${params.toString()}` : ''}`;
+    const response = await geminiFetch(url, { method: 'GET' });
+    const raw = await response.text();
+    const payload = parsePayload(raw);
+
+    if (!response.ok) {
+      const message = extractErrorMessage(payload, 'Gemini ListModels に失敗しました。');
+      throw new GeminiApiError(message, { status: response.status, body: payload });
+    }
+
+    const models = Array.isArray(payload?.models) ? payload.models : [];
+    for (const entry of models) {
+      const name = typeof entry?.name === 'string' ? entry.name : null;
+      if (!name) {
+        continue;
+      }
+      const supported = Array.isArray(entry?.supportedGenerationMethods)
+        ? entry.supportedGenerationMethods.map((method: any) => String(method).toLowerCase())
+        : [];
+      const supportsGenerateContent = supported.length === 0 || supported.includes('generatecontent');
+      if (supportsGenerateContent && !discovered.includes(name)) {
+        discovered.push(name);
+      }
+    }
+
+    pageToken = typeof payload?.nextPageToken === 'string' && payload.nextPageToken ? payload.nextPageToken : undefined;
+  } while (pageToken);
+
+  cachedGenerateContentModels = discovered;
+  cachedGenerateContentModelsFetchedAt = now;
+  console.info('fetchGenerateContentModelNames available:', cachedGenerateContentModels);
+  return discovered;
 }
 
 export async function createFileStore(displayName: string): Promise<GeminiStoreResult> {
@@ -548,7 +613,6 @@ function normalizeModelId(value?: string | null): string | null {
 
 function buildChatRequestContents(messages: GeminiChatMessage[]) {
   const contents: any[] = [];
-  const systemParts: Array<{ text: string }> = [];
 
   for (const entry of messages || []) {
     if (!entry || typeof entry.content !== 'string') {
@@ -560,7 +624,7 @@ function buildChatRequestContents(messages: GeminiChatMessage[]) {
     }
 
     if (entry.role === 'system') {
-      systemParts.push({ text: trimmed });
+      // system メッセージは generateChatResponse 側で最初の user に統合済み
       continue;
     }
 
@@ -571,11 +635,52 @@ function buildChatRequestContents(messages: GeminiChatMessage[]) {
     });
   }
 
-  return { contents, systemParts };
+  return contents;
 }
 
-function getDefaultChatModelOrder(): string[] {
-  return [...TEXT_MODEL_ORDER];
+function buildChatPayload({
+  contents,
+  fileSearch,
+  generationConfig,
+}: {
+  contents: any[];
+  fileSearch?: GeminiChatFileSearchOptions | null;
+  generationConfig?: Record<string, number>;
+}) {
+  const payload: Record<string, any> = {
+    contents,
+  };
+
+  if (fileSearch && fileSearch.storeName) {
+    payload.tools = [
+      {
+        file_search: {
+          file_search_store_names: [fileSearch.storeName],
+        },
+      },
+    ];
+
+    const fileSearchConfig: Record<string, any> = {};
+    if (typeof fileSearch.maxChunks === 'number') {
+      fileSearchConfig.max_chunks = fileSearch.maxChunks;
+    }
+    if (typeof fileSearch.dynamicThreshold === 'number') {
+      fileSearchConfig.dynamic_retrieval_config = {
+        mode: 'MODE_DYNAMIC',
+        dynamic_threshold: fileSearch.dynamicThreshold,
+      };
+    }
+
+    if (Object.keys(fileSearchConfig).length > 0) {
+      payload.tool_config = { file_search: fileSearchConfig };
+    }
+  }
+
+  if (generationConfig && Object.keys(generationConfig).length > 0) {
+    payload.generationConfig = generationConfig;
+  }
+
+  return payload;
 }
 
 export async function generateChatResponse(options: {
@@ -594,28 +699,28 @@ export async function generateChatResponse(options: {
 
   ensureGeminiEnvironment({ requireProject: false, requireLocation: false });
 
-  const messageList = Array.isArray(options.messages) ? options.messages : [];
-  const { contents, systemParts } = buildChatRequestContents(messageList);
-  if (!contents.length) {
-    throw new Error('Gemini チャットにはユーザーまたはアシスタントのメッセージが必要です。');
+  const baseMessages = Array.isArray(options.messages) ? [...options.messages] : [];
+
+  const instruction = options.systemInstruction?.trim();
+  if (instruction) {
+    const firstUserIndex = baseMessages.findIndex((message) => message?.role === 'user' && typeof message.content === 'string');
+    if (firstUserIndex >= 0) {
+      const existing = baseMessages[firstUserIndex]?.content || '';
+      baseMessages[firstUserIndex] = {
+        ...baseMessages[firstUserIndex],
+        content: `${instruction}\n\n${existing}`.trim(),
+      };
+    } else {
+      baseMessages.unshift({
+        role: 'user',
+        content: instruction,
+      });
+    }
   }
 
-  const body: Record<string, any> = {
-    contents,
-  };
-
-  if (systemParts.length || options.systemInstruction) {
-    const parts = [...systemParts];
-    if (options.systemInstruction) {
-      const trimmed = options.systemInstruction.trim();
-      if (trimmed) {
-        parts.unshift({ text: trimmed });
-      }
-    }
-    body.systemInstruction = {
-      role: 'system',
-      parts,
-    };
+  const contents = buildChatRequestContents(baseMessages);
+  if (!contents.length) {
+    throw new Error('Gemini チャットにはユーザーまたはアシスタントのメッセージが必要です。');
   }
 
   const generationConfig: Record<string, number> = {};
@@ -631,49 +736,23 @@ export async function generateChatResponse(options: {
   if (typeof options.maxOutputTokens === 'number') {
     generationConfig.maxOutputTokens = options.maxOutputTokens;
   }
-  if (Object.keys(generationConfig).length > 0) {
-    body.generationConfig = generationConfig;
-  }
+  const payload = buildChatPayload({
+    contents,
+    fileSearch: options.fileSearch,
+    generationConfig,
+  });
 
-  let storeResource: string | null = null;
-  const tools: any[] = [];
-  let toolConfig: Record<string, any> | undefined;
-  const requestedStoreName = typeof options.fileSearch?.storeName === 'string'
-    ? options.fileSearch.storeName.trim()
-    : '';
-
-  if (requestedStoreName) {
-    storeResource = ensureStoreResourceName(requestedStoreName);
-    tools.push({
-      file_search: {
-        file_search_store_names: [storeResource],
-      },
-    });
-
-    const fileSearchConfig: Record<string, any> = {};
-    if (typeof options.fileSearch?.maxChunks === 'number') {
-      fileSearchConfig.max_chunks = options.fileSearch.maxChunks;
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const payloadPreview = JSON.stringify(payload);
+      console.debug('Gemini chat payload preview:', payloadPreview.length > 2000 ? `${payloadPreview.slice(0, 2000)}…` : payloadPreview);
+    } catch (payloadError) {
+      console.debug('Gemini chat payload serialization failed:', payloadError);
     }
-    if (typeof options.fileSearch?.dynamicThreshold === 'number') {
-      fileSearchConfig.dynamic_retrieval_config = {
-        mode: 'MODE_DYNAMIC',
-        dynamic_threshold: options.fileSearch.dynamicThreshold,
-      };
-    }
-    if (Object.keys(fileSearchConfig).length > 0) {
-      toolConfig = { file_search: fileSearchConfig };
-    }
-  }
-
-  if (tools.length > 0) {
-    body.tools = tools;
-  }
-  if (toolConfig) {
-    body.tool_config = toolConfig;
   }
 
   const preferredModel = normalizeModelId(options.model);
-  const defaultModels = getDefaultChatModelOrder();
+  const defaultModels = await getDefaultModelOrder();
   const orderedModels = (preferredModel
     ? [preferredModel, ...defaultModels]
     : [...defaultModels]
@@ -683,11 +762,11 @@ export async function generateChatResponse(options: {
     throw new Error('利用可能な Gemini チャットモデルが選択されていません。');
   }
 
-  const bodyJson = JSON.stringify(body);
+  const bodyJson = JSON.stringify(payload);
   let lastError: any = null;
 
   for (const model of orderedModels) {
-    const url = `${GEMINI_API_BASE}/${encodePath(model)}:generateContent`;
+    const url = `${GEMINI_CHAT_BASE}/${encodePath(model)}:generateContent`;
     const response = await geminiFetch(url, {
       method: 'POST',
       headers: {
@@ -712,7 +791,6 @@ export async function generateChatResponse(options: {
         body: typeof raw === 'string' ? raw.slice(0, 512) : raw,
         debugId,
         model,
-        storeResource,
       });
 
       if (!shouldRetryChatModel(geminiError)) {
@@ -816,12 +894,32 @@ function buildMediaPromptParts({
   return parts;
 }
 
-function getDefaultModelOrder(mimeType?: string | null): string[] {
-  const normalized = mimeType?.split(';')[0]?.trim().toLowerCase() || '';
-  if (normalized.startsWith('image/') || normalized.startsWith('video/') || normalized.startsWith('audio/')) {
-    return [...MULTIMODAL_MODEL_ORDER];
+async function getDefaultModelOrder(mimeType?: string | null): Promise<string[]> {
+  const available = await fetchGenerateContentModelNames();
+  if (!available.length) {
+    throw new Error('ListModels から利用可能な Gemini モデルを取得できませんでした。');
   }
-  return [...TEXT_MODEL_ORDER];
+
+  const availableSet = new Set(available);
+  const normalized = mimeType?.split(';')[0]?.trim().toLowerCase() || '';
+  const preferred = normalized.startsWith('image/') || normalized.startsWith('video/') || normalized.startsWith('audio/')
+    ? PREFERRED_MULTIMODAL_MODELS
+    : PREFERRED_TEXT_MODELS;
+
+  const ordered: string[] = [];
+  for (const name of preferred) {
+    if (availableSet.has(name) && !ordered.includes(name)) {
+      ordered.push(name);
+    }
+  }
+
+  for (const name of available) {
+    if (!ordered.includes(name)) {
+      ordered.push(name);
+    }
+  }
+
+  return ordered;
 }
 
 function shouldRetryModel(error: any): boolean {
@@ -942,7 +1040,7 @@ export async function analyzeFileWithGemini(options: {
   const fallbackList = (options.modelFallbacks || []).map((model) => normalizeModelId(model)).filter(Boolean) as string[];
   const orderedModels = preferred
     ? [preferred, ...fallbackList]
-    : [...getDefaultModelOrder(options.mimeType), ...fallbackList];
+    : [...(await getDefaultModelOrder(options.mimeType)), ...fallbackList];
 
   let lastError: any = null;
   for (const candidate of orderedModels) {
@@ -1015,7 +1113,7 @@ export async function analyzeInlineMediaWithGemini(options: {
   const fallbackList = (options.modelFallbacks || []).map((model) => normalizeModelId(model)).filter(Boolean) as string[];
   const orderedModels = preferred
     ? [preferred, ...fallbackList]
-    : [...getDefaultModelOrder(mimeType), ...fallbackList];
+    : [...(await getDefaultModelOrder(mimeType)), ...fallbackList];
 
   let lastError: any = null;
   for (const candidate of orderedModels) {

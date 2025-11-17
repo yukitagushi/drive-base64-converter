@@ -12,6 +12,9 @@ let landingRequestButton;
 let loginBackButton;
 
 let messageList;
+let chatThreadTitle;
+let chatStoreLabel;
+let chatStoreSelect;
 let chatForm;
 let chatInput;
 let chatSubmitButton;
@@ -87,6 +90,8 @@ let googleHint;
 
 let toastContainer;
 
+let activeFileStoreId = null;
+
 const SUPPORTED_UPLOAD_ACCEPT = [
   'application/pdf',
   'application/msword',
@@ -151,6 +156,47 @@ function cacheDomElements() {
   loginBackButton = document.getElementById('login-back');
 
   messageList = document.getElementById('message-list');
+  chatThreadTitle = document.getElementById('chat-thread-title');
+  if (!chatThreadTitle && messageList && messageList.parentElement) {
+    chatThreadTitle = document.createElement('div');
+    chatThreadTitle.id = 'chat-thread-title';
+    chatThreadTitle.className = 'chat-thread-title';
+    chatThreadTitle.textContent = 'スレッドを選択すると会話履歴が表示されます。';
+    chatThreadTitle.style.fontWeight = '600';
+    chatThreadTitle.style.margin = '0 0 12px';
+    messageList.parentElement.insertBefore(chatThreadTitle, messageList);
+  }
+  chatStoreSelect = document.getElementById('chat-store-select');
+  chatStoreLabel = document.getElementById('chat-store-label');
+  if ((!chatStoreSelect || !chatStoreLabel) && messageList && messageList.parentElement) {
+    const container = document.createElement('div');
+    container.className = 'chat-store-selector';
+    container.style.marginBottom = '12px';
+
+    const label = document.createElement('label');
+    label.htmlFor = 'chat-store-select';
+    label.textContent = '参照するストアを選択';
+    label.style.display = 'block';
+    label.style.fontWeight = '600';
+    label.style.marginBottom = '4px';
+
+    chatStoreSelect = document.createElement('select');
+    chatStoreSelect.id = 'chat-store-select';
+    chatStoreSelect.className = 'chat-store-select';
+    chatStoreSelect.style.width = '100%';
+    chatStoreSelect.style.marginBottom = '6px';
+
+    chatStoreLabel = document.createElement('div');
+    chatStoreLabel.id = 'chat-store-label';
+    chatStoreLabel.className = 'chat-store-label';
+    chatStoreLabel.style.fontSize = '0.9rem';
+    chatStoreLabel.style.color = '#555';
+
+    container.appendChild(label);
+    container.appendChild(chatStoreSelect);
+    container.appendChild(chatStoreLabel);
+    messageList.parentElement.insertBefore(container, messageList);
+  }
   chatForm = document.getElementById('chat-form');
   chatInput = document.getElementById('chat-input');
   chatSubmitButton = document.querySelector('#chat-form button[type="submit"]');
@@ -228,6 +274,7 @@ function cacheDomElements() {
   googleHint = document.getElementById('google-hint');
 
   toastContainer = createToastContainer();
+  updateActiveStoreLabel();
 }
 
 async function waitForDom() {
@@ -268,7 +315,9 @@ async function waitForDom() {
   }
 }
 
-let conversationHistory = [];
+let activeThreadId = null;
+const threadMessagesCache = new Map();
+const threadMessageRequests = new Map();
 let isSending = false;
 let storeCache = [];
 const storeFilesCache = new Map();
@@ -277,6 +326,20 @@ const videoSummaryRequestState = new Map();
 const audioTranscriptRequestState = new Map();
 const storeSyncRequestState = new Map();
 const mediaAutoSyncHistory = new Map();
+const documentAutoSyncHistory = new Map();
+const documentSyncCompletedStores = new Set();
+const DOCUMENT_MIME_TYPES = [
+  'text/plain',
+  'text/markdown',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+];
+const DOCUMENT_MIME_TYPE_SET = new Set(DOCUMENT_MIME_TYPES.map((type) => type.toLowerCase()));
 const mediaAutoSyncRunner = {
   timerId: null,
   activeStoreId: null,
@@ -869,6 +932,9 @@ async function init() {
   autoResize(uploadNotesInput);
 
   chatForm.addEventListener('submit', onChatSubmit);
+  if (chatStoreSelect) {
+    chatStoreSelect.addEventListener('change', onChatStoreChange);
+  }
   documentForm.addEventListener('submit', onDocumentSubmit);
   refreshStoresBtn.addEventListener('click', () => loadStores({ force: true }));
 
@@ -1251,6 +1317,10 @@ function clearSessionData() {
   if (submitUploadBtn) {
     submitUploadBtn.disabled = true;
   }
+  activeFileStoreId = null;
+  updateActiveStoreLabel();
+  updateStoreSelectionHighlight();
+  updateChatStoreSelect({ preserveSelection: false });
   resetConversation();
   updateSessionHint();
 }
@@ -1656,17 +1726,39 @@ async function loadSession() {
 
 function applySessionUpdate(nextSession, threads) {
   if (nextSession && typeof nextSession === 'object') {
-    const previousThread = sessionState.threadId;
+    const previousOfficeId = sessionState.officeId;
+    const previousStaffId = sessionState.staffId;
     sessionState.organizationId = nextSession.organizationId || null;
     sessionState.officeId = nextSession.officeId || null;
     sessionState.staffId = nextSession.staffId || null;
-    sessionState.threadId = nextSession.threadId || null;
     if (typeof nextSession.supabaseConfigured === 'boolean') {
       sessionState.supabaseConfigured = nextSession.supabaseConfigured;
     }
 
-    if (previousThread && previousThread !== sessionState.threadId) {
-      resetConversation();
+    const officeChanged = previousOfficeId !== sessionState.officeId;
+    const staffChanged = previousStaffId !== sessionState.staffId;
+    let resolvedThreadId = nextSession.threadId || null;
+
+    if (!resolvedThreadId && !officeChanged && !staffChanged && activeThreadId) {
+      resolvedThreadId = activeThreadId;
+    }
+
+    sessionState.threadId = resolvedThreadId;
+
+    if (resolvedThreadId) {
+      if (resolvedThreadId !== activeThreadId || !threadMessagesCache.has(resolvedThreadId)) {
+        ensureActiveThread(resolvedThreadId, { fetchIfMissing: true, forceReload: false });
+      } else {
+        updateActiveThreadTitle();
+      }
+    } else {
+      const shouldClearConversation = officeChanged || staffChanged || !activeThreadId;
+      if (shouldClearConversation) {
+        ensureActiveThread(null, { fetchIfMissing: false });
+      } else {
+        sessionState.threadId = activeThreadId;
+        updateActiveThreadTitle();
+      }
     }
   }
 
@@ -1801,6 +1893,7 @@ function renderThreads() {
   });
 
   threadList.appendChild(fragment);
+  updateActiveThreadTitle();
 }
 
 function updateSessionHint() {
@@ -1815,9 +1908,178 @@ function updateSessionHint() {
 }
 
 function resetConversation() {
-  conversationHistory = [];
-  renderConversation(conversationHistory);
+  activeThreadId = null;
+  threadMessagesCache.clear();
+  threadMessageRequests.clear();
+  renderConversation([]);
+  updateActiveThreadTitle();
   setStatus('ジェミニ準備完了');
+}
+
+function getThreadTitle(threadId) {
+  if (!threadId) {
+    return null;
+  }
+  const thread = threadCache.find((item) => item.id === threadId);
+  return thread?.title || null;
+}
+
+function updateActiveThreadTitle() {
+  if (!chatThreadTitle) {
+    return;
+  }
+  if (!activeThreadId) {
+    chatThreadTitle.textContent = 'スレッドを選択すると会話履歴が表示されます。';
+    chatThreadTitle.dataset.empty = '1';
+    return;
+  }
+  delete chatThreadTitle.dataset.empty;
+  chatThreadTitle.textContent = getThreadTitle(activeThreadId) || '無題のスレッド';
+}
+
+function updateActiveStoreLabel() {
+  if (!chatStoreLabel) {
+    return;
+  }
+  if (!activeFileStoreId) {
+    chatStoreLabel.textContent = '参照ストアが選択されていません。';
+    chatStoreLabel.dataset.empty = '1';
+    return;
+  }
+  delete chatStoreLabel.dataset.empty;
+  const store = storeCache.find((entry) => entry.id === activeFileStoreId);
+  if (!store) {
+    chatStoreLabel.textContent = '選択中のストアが見つかりません。';
+    return;
+  }
+  const name = store.displayName || store.geminiStoreName || store.id;
+  chatStoreLabel.textContent = `現在の参照ストア: ${name}`;
+}
+
+function updateStoreSelectionHighlight() {
+  if (!storeList) return;
+  const cards = Array.from(storeList.querySelectorAll('.store-card'));
+  for (const card of cards) {
+    if (card.dataset.storeId === activeFileStoreId) {
+      card.classList.add('is-active');
+    } else {
+      card.classList.remove('is-active');
+    }
+  }
+}
+
+function updateChatStoreSelect(options = {}) {
+  if (!chatStoreSelect) return;
+  const { preserveSelection = true } = options;
+  const previousValue = preserveSelection ? chatStoreSelect.value : '';
+  chatStoreSelect.innerHTML = '<option value="">ストアを選択...</option>';
+  for (const store of storeCache) {
+    const option = document.createElement('option');
+    option.value = store.id;
+    option.textContent = store.displayName || store.geminiStoreName;
+    chatStoreSelect.appendChild(option);
+  }
+
+  let nextValue = '';
+  if (activeFileStoreId && storeCache.some((entry) => entry.id === activeFileStoreId)) {
+    nextValue = activeFileStoreId;
+  } else if (previousValue && storeCache.some((entry) => entry.id === previousValue)) {
+    nextValue = previousValue;
+  }
+
+  chatStoreSelect.value = nextValue;
+  chatStoreSelect.disabled = !storeCache.length;
+}
+
+function setActiveFileStore(storeId) {
+  const store = storeCache.find((entry) => entry.id === storeId);
+  if (!store) {
+    return;
+  }
+  activeFileStoreId = store.id;
+  updateActiveStoreLabel();
+  updateStoreSelectionHighlight();
+  updateChatStoreSelect({ preserveSelection: false });
+}
+
+function ensureActiveFileStoreSelection() {
+  if (activeFileStoreId && storeCache.some((entry) => entry.id === activeFileStoreId)) {
+    updateActiveStoreLabel();
+    updateStoreSelectionHighlight();
+    updateChatStoreSelect();
+    return;
+  }
+  activeFileStoreId = storeCache.length ? storeCache[0].id : null;
+  updateActiveStoreLabel();
+  updateStoreSelectionHighlight();
+  updateChatStoreSelect({ preserveSelection: false });
+}
+
+function onChatStoreChange(event) {
+  const selectedId = event.target.value || null;
+  if (selectedId && storeCache.some((entry) => entry.id === selectedId)) {
+    setActiveFileStore(selectedId);
+    return;
+  }
+  activeFileStoreId = null;
+  updateActiveStoreLabel();
+  updateStoreSelectionHighlight();
+  updateChatStoreSelect({ preserveSelection: false });
+}
+
+function ensureActiveThread(threadId, options = {}) {
+  const { messages = null, fetchIfMissing = true, forceReload = false } = options;
+  activeThreadId = threadId || null;
+  updateActiveThreadTitle();
+  if (!threadId) {
+    renderConversation([]);
+    return;
+  }
+
+  if (Array.isArray(messages)) {
+    threadMessagesCache.set(threadId, messages);
+  }
+
+  const cached = threadMessagesCache.get(threadId) || [];
+  renderConversation(cached);
+
+  if ((forceReload || !threadMessagesCache.has(threadId)) && fetchIfMissing) {
+    fetchThreadMessages(threadId).catch((error) => {
+      console.error('Failed to load thread messages:', error);
+      if (!threadMessagesCache.has(threadId)) {
+        showToast('スレッドの履歴を読み込めませんでした。', { type: 'error' });
+      }
+    });
+  }
+}
+
+async function fetchThreadMessages(threadId, options = {}) {
+  if (!threadId) {
+    return [];
+  }
+  if (!options.force && threadMessageRequests.has(threadId)) {
+    return threadMessageRequests.get(threadId);
+  }
+
+  const request = (async () => {
+    try {
+      const data = await safeFetch(`/api/chat?threadId=${encodeURIComponent(threadId)}`, { method: 'GET' });
+      if (data?.error) {
+        throw new Error(data.error || 'スレッド履歴の取得に失敗しました');
+      }
+      const messages = Array.isArray(data.messages) ? data.messages : [];
+      threadMessagesCache.set(threadId, messages);
+      if (threadId === activeThreadId) {
+        renderConversation(messages);
+      }
+      return messages;
+    } finally {
+      threadMessageRequests.delete(threadId);
+    }
+  })();
+
+  threadMessageRequests.set(threadId, request);
+  return request;
 }
 
 function normalizeThread(thread) {
@@ -1948,8 +2210,9 @@ async function onThreadListClick(event) {
   const card = event.target.closest('[data-thread-id]');
   if (!card) return;
   const threadId = card.dataset.threadId;
-  if (!threadId || threadId === sessionState.threadId) return;
+  if (!threadId) return;
   await setSession({ threadId });
+  ensureActiveThread(threadId, { fetchIfMissing: true, forceReload: false });
 }
 
 async function setSession(partial) {
@@ -2027,11 +2290,13 @@ async function onChatSubmit(event) {
   setStatus('Gemini が応答を生成中...');
 
   try {
+    const currentThreadId = activeThreadId || sessionState.threadId || null;
     const data = await safeFetch('/api/chat', {
       method: 'POST',
       body: JSON.stringify({
-        threadId: sessionState.threadId,
+        threadId: currentThreadId,
         message: text,
+        fileStoreId: activeFileStoreId || null,
       }),
     });
 
@@ -2039,10 +2304,14 @@ async function onChatSubmit(event) {
       throw new Error(data.error || '応答の取得に失敗しました');
     }
 
-    conversationHistory = Array.isArray(data.messages) ? data.messages : [];
-    sessionState.threadId = data.threadId || sessionState.threadId;
-
-    renderConversation(conversationHistory);
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    const threadId = data.threadId || currentThreadId;
+    if (threadId) {
+      sessionState.threadId = threadId;
+      ensureActiveThread(threadId, { messages, fetchIfMissing: false, forceReload: false });
+    } else {
+      renderConversation(messages);
+    }
     setStatus('ジェミニ準備完了');
 
     loadSession().catch((error) => console.error(error));
@@ -2111,6 +2380,10 @@ async function loadStores(options = {}) {
     storeCache = [];
     renderStores();
     updateStoreSelect({ preserveSelection: false });
+    activeFileStoreId = null;
+    updateActiveStoreLabel();
+    updateStoreSelectionHighlight();
+    updateChatStoreSelect({ preserveSelection: false });
     return;
   }
   storeError.textContent = '';
@@ -2128,18 +2401,25 @@ async function loadStores(options = {}) {
       ? data.stores
       : [];
     storeCache = rawItems.map((row) => normalizeStoreRow(row)).filter((item) => item.id && item.geminiStoreName);
+    if (data.currentStoreId && storeCache.some((entry) => entry.id === data.currentStoreId)) {
+      activeFileStoreId = data.currentStoreId;
+    }
     if (data.session) {
       applySessionUpdate(data.session, data.threads);
       renderSessionSelectors();
     }
     renderStores();
+    ensureActiveFileStoreSelection();
     updateStoreSelect();
+    updateChatStoreSelect();
   } catch (error) {
     console.error(error);
     storeError.textContent = error.message;
     storeCache = [];
     renderStores();
+    ensureActiveFileStoreSelection();
     updateStoreSelect();
+    updateChatStoreSelect({ preserveSelection: false });
   } finally {
     delete storeList.dataset.loading;
   }
@@ -2202,6 +2482,9 @@ function renderStores() {
     card.className = 'store-card';
     card.dataset.storeId = store.id;
     card.dataset.geminiStore = store.geminiStoreName;
+    if (activeFileStoreId && activeFileStoreId === store.id) {
+      card.classList.add('is-active');
+    }
 
     const header = document.createElement('div');
     header.className = 'store-card__header';
@@ -2414,6 +2697,14 @@ async function onUploadFile(event) {
       grouped.forEach((items, targetStoreId) => {
         const existingList = storeFilesCache.get(targetStoreId) || [];
         storeFilesCache.set(targetStoreId, [...items, ...existingList]);
+        if (
+          items.some(
+            (entry) =>
+              isDocumentMimeType(entry.mimeType || entry.mime_type) && !entry.geminiFileName && !entry.gemini_file_name,
+          )
+        ) {
+          markDocumentSyncPending(targetStoreId);
+        }
       });
     } else {
       storeFilesCache.delete(storeId);
@@ -2479,20 +2770,24 @@ function handleOpenUploadDialog() {
 
 async function onStoreListClick(event) {
   const button = event.target.closest('button[data-action]');
-  if (!button) return;
-  const card = button.closest('.store-card');
+  const card = event.target.closest('.store-card');
   if (!card) return;
   const storeId = card.dataset.storeId;
   if (!storeId) return;
 
-  if (button.dataset.action === 'sync-pending') {
-    await syncPendingFiles({ button, card, storeId });
+  if (button) {
+    if (button.dataset.action === 'sync-pending') {
+      await syncPendingFiles({ button, card, storeId });
+      return;
+    }
+
+    if (button.dataset.action === 'toggle-files') {
+      await toggleStoreFiles(card, button, storeId);
+    }
     return;
   }
 
-  if (button.dataset.action === 'toggle-files') {
-    await toggleStoreFiles(card, button, storeId);
-  }
+  setActiveFileStore(storeId);
 }
 
 async function toggleStoreFiles(card, button, storeId) {
@@ -2533,6 +2828,7 @@ async function toggleStoreFiles(card, button, storeId) {
       files = rawFiles.map((row) => normalizeFileRow(row));
       storeFilesCache.set(storeId, files);
     }
+    updateDocumentSyncCompletionFromFiles(storeId, files);
     renderFileList(listEl, files);
     updateMediaSyncStatusForContainer(container);
     startMediaAutoSyncLoop(storeId, container);
@@ -2739,6 +3035,7 @@ function updateMediaSyncStatusForContainer(container) {
   }
   const storeId = container.dataset.storeId || '';
   const history = mediaAutoSyncHistory.get(storeId) || null;
+  const docHistory = documentAutoSyncHistory.get(storeId) || null;
   const isActive = mediaAutoSyncRunner.activeStoreId === storeId;
   const isRunning = isActive && mediaAutoSyncRunner.syncInFlight;
 
@@ -2750,8 +3047,16 @@ function updateMediaSyncStatusForContainer(container) {
 
   if (history) {
     const icon = history.pendingCount > 0 ? '🟡' : '✅';
-    statusEl.textContent = `${icon} AI自動解析完了 / 今回: ${history.processedCount}件（成功 ${history.succeeded} / 失敗 ${history.failed}） / 残り: ${history.pendingCount}件`;
+    const docSuffix = docHistory ? ` / 文書残り: ${docHistory.pendingCount}件` : '';
+    statusEl.textContent = `${icon} AI自動解析完了 / 今回: ${history.processedCount}件（成功 ${history.succeeded} / 失敗 ${history.failed}） / 残り: ${history.pendingCount}件${docSuffix}`;
     statusEl.dataset.state = history.pendingCount > 0 ? 'pending' : 'complete';
+    return;
+  }
+
+  if (docHistory) {
+    const icon = docHistory.pendingCount > 0 ? '🟡' : '✅';
+    statusEl.textContent = `${icon} 文書同期状況: 残り ${docHistory.pendingCount}件 / 前回処理 ${docHistory.processedCount}件`;
+    statusEl.dataset.state = docHistory.pendingCount > 0 ? 'pending' : 'complete';
     return;
   }
 
@@ -2767,6 +3072,7 @@ function startMediaAutoSyncLoop(storeId, container) {
   mediaAutoSyncRunner.activeStoreId = storeId;
   mediaAutoSyncRunner.container = container;
   mediaAutoSyncRunner.syncInFlight = false;
+  markDocumentSyncPending(storeId);
   updateMediaSyncStatusForContainer(container);
   mediaAutoSyncRunner.timerId = setInterval(runMediaAutoSyncTick, MEDIA_SYNC_INTERVAL_MS);
   runMediaAutoSyncTick();
@@ -2834,9 +3140,101 @@ async function runMediaAutoSyncTick() {
       stopMediaAutoSyncLoop(mediaAutoSyncRunner.activeStoreId);
     }
   } finally {
+    await syncPendingDocumentsForStore(storeId, container);
     mediaAutoSyncRunner.syncInFlight = false;
     if (mediaAutoSyncRunner.container && mediaAutoSyncRunner.container.isConnected) {
       updateMediaSyncStatusForContainer(mediaAutoSyncRunner.container);
+    }
+  }
+}
+
+function markDocumentSyncPending(storeId) {
+  if (!storeId) {
+    return;
+  }
+  documentSyncCompletedStores.delete(storeId);
+}
+
+function markDocumentSyncComplete(storeId) {
+  if (!storeId) {
+    return;
+  }
+  documentSyncCompletedStores.add(storeId);
+}
+
+function hasPendingDocumentEntries(files) {
+  if (!Array.isArray(files)) {
+    return false;
+  }
+  return files.some((file) => {
+    const mimeType = file?.mimeType || file?.mime_type || '';
+    const geminiName = file?.geminiFileName || file?.gemini_file_name || '';
+    return isDocumentMimeType(mimeType) && !geminiName;
+  });
+}
+
+function updateDocumentSyncCompletionFromFiles(storeId, files) {
+  if (!storeId) {
+    return;
+  }
+  if (hasPendingDocumentEntries(files)) {
+    markDocumentSyncPending(storeId);
+  }
+}
+
+async function syncPendingDocumentsForStore(storeId, container) {
+  if (!storeId) {
+    return;
+  }
+
+  if (documentSyncCompletedStores.has(storeId)) {
+    return;
+  }
+
+  try {
+    const response = await safeFetch('/api/gemini-sync-documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileStoreId: storeId }),
+    });
+
+    if (response?.success) {
+      const lastResult = {
+        processedCount: Number(response.processedCount || 0),
+        succeeded: Number(response.succeeded || 0),
+        failed: Number(response.failed || 0),
+        pendingCount: Number(response.pendingCount || 0),
+        lastRunAt: new Date().toISOString(),
+      };
+      documentAutoSyncHistory.set(storeId, lastResult);
+
+      console.log('ドキュメント自動同期結果:', lastResult);
+
+      if (lastResult.pendingCount <= 0) {
+        markDocumentSyncComplete(storeId);
+      } else {
+        markDocumentSyncPending(storeId);
+      }
+
+      if (
+        lastResult.processedCount > 0 &&
+        container &&
+        container.isConnected &&
+        !container.hidden
+      ) {
+        await refreshStoreFilesView(storeId, container);
+      }
+
+      if (lastResult.pendingCount <= 0 && (mediaAutoSyncHistory.get(storeId)?.pendingCount || 0) <= 0) {
+        stopMediaAutoSyncLoop(storeId);
+      }
+    } else {
+      console.warn('ドキュメント自動同期 API が失敗しました:', response);
+    }
+  } catch (error) {
+    console.error('ドキュメント自動同期リクエストに失敗しました:', error);
+    if (error?.status === 401 || error?.status === 403) {
+      stopMediaAutoSyncLoop(storeId);
     }
   }
 }
@@ -2854,6 +3252,7 @@ async function refreshStoreFilesView(storeId, container) {
       : [];
     const normalized = rawFiles.map((row) => normalizeFileRow(row));
     storeFilesCache.set(storeId, normalized);
+    updateDocumentSyncCompletionFromFiles(storeId, normalized);
     const { listEl } = ensureStoreFilesElements(container);
     renderFileList(listEl, normalized);
   } catch (error) {
@@ -2889,6 +3288,15 @@ function isVideoMimeType(value) {
 function isAudioMimeType(value) {
   const lower = normalizeMimeTypeValue(value).toLowerCase();
   return Boolean(lower) && lower.startsWith('audio/');
+}
+
+function isDocumentMimeType(value) {
+  const lower = normalizeMimeTypeValue(value).toLowerCase();
+  if (!lower) {
+    return false;
+  }
+  const base = lower.split(';')[0].trim();
+  return DOCUMENT_MIME_TYPE_SET.has(base);
 }
 
 const OPENAI_CONTENT_LIMIT_MESSAGE =

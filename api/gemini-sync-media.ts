@@ -9,6 +9,7 @@ import {
   isAudioMime,
   isImageMime,
   isVideoMime,
+  markOriginalFileAsProcessed,
   serializeGeminiError,
   serializeSupabaseError,
   SupabaseActionError,
@@ -21,14 +22,18 @@ import { getSupabaseClientWithToken } from '../lib/supabaseClient';
 const API_NAME = '/api/gemini-sync-media';
 const SYNC_PROCESS_LIMIT = 3;
 const SYNC_FETCH_LIMIT = 12;
+const MIN_IMAGE_SIZE_BYTES = 1024;
+const MACOS_METADATA_PREFIX = '__MACOSX';
+const SKIPPED_MACOS_METADATA = 'SKIPPED_MACOS_METADATA';
+const SKIPPED_TOO_SMALL_IMAGE = 'SKIPPED_TOO_SMALL_IMAGE';
 
 const GEMINI_PENDING_MATCHERS = ['gemini_file_name.is.null', 'gemini_file_name.eq.', 'gemini_file_name.eq.EMPTY'];
 const MIME_PENDING_MATCHERS = ['mime_type.ilike.image/%', 'mime_type.ilike.video/%', 'mime_type.ilike.audio/%'];
-const PENDING_MEDIA_FILTER = buildPendingMediaCondition();
+const PENDING_MEDIA_FILTER = buildPendingMediaCondition(MIN_IMAGE_SIZE_BYTES);
 
 interface SyncResultEntry {
   fileId: string;
-  status: 'success' | 'failed';
+  status: 'success' | 'failed' | 'skipped';
   action: 'image_summary' | 'video_transcript' | 'audio_transcript' | 'skipped';
   summaryFile?: { id: string; displayName: string; geminiFileName: string | null } | null;
   reason?: string;
@@ -157,10 +162,72 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     for (const candidate of queue) {
       const mimeType = (candidate.mime_type || '').toLowerCase();
-      let action: SyncResultEntry['action'] = 'skipped';
+      const isImage = isImageMime(mimeType);
+      const isAudio = isAudioMime(mimeType);
+      const isVideo = isVideoMime(mimeType);
+      let action: SyncResultEntry['action'] =
+        (isAudio && 'audio_transcript') ||
+        (isVideo && 'video_transcript') ||
+        (isImage && 'image_summary') ||
+        'skipped';
+
+      const displayName = candidate.display_name || '';
+      if (displayName.startsWith(MACOS_METADATA_PREFIX)) {
+        try {
+          await markOriginalFileAsProcessed(admin, candidate.id, SKIPPED_MACOS_METADATA);
+          results.push({
+            fileId: candidate.id,
+            status: 'skipped',
+            action,
+            reason: 'macos_metadata',
+          });
+        } catch (error: any) {
+          failed += 1;
+          const reason = classifySyncError(error);
+          console.error(`${API_NAME} failed to mark macOS metadata file as skipped`, {
+            fileId: candidate.id,
+            reason,
+            error: error?.message || error,
+          });
+          results.push({
+            fileId: candidate.id,
+            status: 'failed',
+            action,
+            reason,
+          });
+        }
+        continue;
+      }
+
+      if (isImage && candidate.size_bytes != null && candidate.size_bytes < MIN_IMAGE_SIZE_BYTES) {
+        try {
+          await markOriginalFileAsProcessed(admin, candidate.id, SKIPPED_TOO_SMALL_IMAGE);
+          results.push({
+            fileId: candidate.id,
+            status: 'skipped',
+            action,
+            reason: 'too_small_image',
+          });
+        } catch (error: any) {
+          failed += 1;
+          const reason = classifySyncError(error);
+          console.error(`${API_NAME} failed to mark tiny image as skipped`, {
+            fileId: candidate.id,
+            reason,
+            error: error?.message || error,
+          });
+          results.push({
+            fileId: candidate.id,
+            status: 'failed',
+            action,
+            reason,
+          });
+        }
+        continue;
+      }
 
       try {
-        if (isAudioMime(mimeType)) {
+        if (isAudio) {
           action = 'audio_transcript';
           const transcriptResult = await ensureAudioTranscriptForFile({
             admin,
@@ -176,7 +243,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             summaryFile: transcriptResult.summaryFile,
           });
           succeeded += 1;
-        } else if (isVideoMime(mimeType)) {
+        } else if (isVideo) {
           action = 'video_transcript';
           const videoResult = await ensureVideoSummaryForFile({
             admin,
@@ -192,7 +259,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             summaryFile: videoResult.summaryFile,
           });
           succeeded += 1;
-        } else if (isImageMime(mimeType)) {
+        } else if (isImage) {
           action = 'image_summary';
           const imageResult = await ensureImageSummaryForFile({
             admin,
@@ -267,7 +334,8 @@ async function fetchPendingMediaFiles(admin: any, fileStoreId: string, limit: nu
     )
     .eq('file_store_id', fileStoreId)
     .or(PENDING_MEDIA_FILTER)
-    .order('uploaded_at', { ascending: false, nullsFirst: false })
+    .not('display_name', 'ilike', `${MACOS_METADATA_PREFIX}%`)
+    .order('uploaded_at', { ascending: true, nullsFirst: true })
     .limit(limit);
 
   if (error) {
@@ -286,7 +354,8 @@ async function countPendingMediaFiles(admin: any, fileStoreId: string): Promise<
     .from('file_store_files')
     .select('id', { count: 'exact', head: true })
     .eq('file_store_id', fileStoreId)
-    .or(PENDING_MEDIA_FILTER);
+    .or(PENDING_MEDIA_FILTER)
+    .not('display_name', 'ilike', `${MACOS_METADATA_PREFIX}%`);
 
   if (error) {
     throw new SupabaseActionError('file_store_files', 'count', error);
@@ -295,11 +364,15 @@ async function countPendingMediaFiles(admin: any, fileStoreId: string): Promise<
   return count ?? 0;
 }
 
-function buildPendingMediaCondition(): string {
+function buildPendingMediaCondition(minImageSizeBytes: number): string {
   const combos: string[] = [];
   for (const geminiMatcher of GEMINI_PENDING_MATCHERS) {
     for (const mimeMatcher of MIME_PENDING_MATCHERS) {
-      combos.push(`and(${geminiMatcher},${mimeMatcher})`);
+      const clauses = [geminiMatcher, mimeMatcher];
+      if (mimeMatcher.includes('image/%')) {
+        clauses.push(`size_bytes.gt.${minImageSizeBytes}`);
+      }
+      combos.push(`and(${clauses.join(',')})`);
     }
   }
   return combos.join(',');
