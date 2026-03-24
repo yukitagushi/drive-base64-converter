@@ -162,8 +162,6 @@ function cacheDomElements() {
     chatThreadTitle.id = 'chat-thread-title';
     chatThreadTitle.className = 'chat-thread-title';
     chatThreadTitle.textContent = 'スレッドを選択すると会話履歴が表示されます。';
-    chatThreadTitle.style.fontWeight = '600';
-    chatThreadTitle.style.margin = '0 0 12px';
     messageList.parentElement.insertBefore(chatThreadTitle, messageList);
   }
   chatStoreSelect = document.getElementById('chat-store-select');
@@ -171,26 +169,18 @@ function cacheDomElements() {
   if ((!chatStoreSelect || !chatStoreLabel) && messageList && messageList.parentElement) {
     const container = document.createElement('div');
     container.className = 'chat-store-selector';
-    container.style.marginBottom = '12px';
 
     const label = document.createElement('label');
     label.htmlFor = 'chat-store-select';
     label.textContent = '参照するストアを選択';
-    label.style.display = 'block';
-    label.style.fontWeight = '600';
-    label.style.marginBottom = '4px';
 
     chatStoreSelect = document.createElement('select');
     chatStoreSelect.id = 'chat-store-select';
     chatStoreSelect.className = 'chat-store-select';
-    chatStoreSelect.style.width = '100%';
-    chatStoreSelect.style.marginBottom = '6px';
 
     chatStoreLabel = document.createElement('div');
     chatStoreLabel.id = 'chat-store-label';
     chatStoreLabel.className = 'chat-store-label';
-    chatStoreLabel.style.fontSize = '0.9rem';
-    chatStoreLabel.style.color = '#555';
 
     container.appendChild(label);
     container.appendChild(chatStoreSelect);
