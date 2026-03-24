@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "gemini-lounge",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "public", "-l", "3000", "--no-clipboard"],
+      "port": 3000,
+      "cwd": "/Users/taguchiyuusei/drive-base64-converter"
+    }
+  ]
+}
