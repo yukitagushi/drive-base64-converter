@@ -2655,7 +2655,9 @@ async function onUploadFile(event) {
     }
 
     if (data?.error) {
-      throw new Error(data.error || 'アップロードに失敗しました');
+      const detail = data.supabaseError?.message || data.geminiError?.message || data.debug?.error || '';
+      const stage = data.debug?.stage || '';
+      throw new Error(`${data.error}${stage ? ` [${stage}]` : ''}${detail ? `: ${detail}` : ''}`);
     }
 
     const uploadedItems = Array.isArray(data.items)
