@@ -545,11 +545,12 @@ export async function uploadFileToStore(options: {
       payloadError,
     });
 
-    if (uploadResponse.status >= 500) {
-      console.error('Gemini file upload encountered a server-side error. Continuing without File Search registration.', {
+    if (uploadResponse.status >= 500 || uploadResponse.status === 404 || uploadResponse.status === 400) {
+      console.error(`Gemini file upload returned ${uploadResponse.status}. Continuing without File Search registration.`, {
         status: uploadResponse.status,
         storeResource: normalizedStoreResource,
         uploadUrl,
+        message,
       });
       return {
         geminiFileName: '',
