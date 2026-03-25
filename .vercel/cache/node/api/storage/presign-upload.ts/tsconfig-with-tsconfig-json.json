@@ -1,0 +1,6 @@
+{
+	"extends": "../../../../../../tsconfig.json",
+	"include": [
+		"../../../../../../api/storage/presign-upload.ts"
+	]
+}

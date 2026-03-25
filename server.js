@@ -2,7 +2,7 @@ const http = require('http');
 const fs = require('fs/promises');
 const fsSync = require('fs');
 const path = require('path');
-const { GeminiKnowledgeBase, GeminiFileSearchService } = require('./lib/gemini');
+const { GeminiKnowledgeBase, GeminiFileSearchService } = require('./lib/gemini-legacy');
 const { SupabaseService } = require('./lib/supabase');
 
 const PORT = Number(process.env.PORT || 3000);
