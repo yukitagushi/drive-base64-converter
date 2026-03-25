@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { GeminiApiError, analyzeFileWithGemini } from '../../lib/gemini';
+import { GeminiApiError, analyzeFileWithGemini, analyzeInlineMediaWithGemini } from '../../lib/gemini';
 import { getSupabaseBearerToken, resolveStaffForRequest } from '../../lib/api-auth';
 import { getSupabaseClientWithToken } from '../../lib/supabaseClient';
 import { getSupabaseAdmin } from '../../lib/supabaseAdmin';
@@ -116,11 +116,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const requestPrompt = prompt || 'メディアの内容を要約し、重要なポイントと推奨アクションを日本語で示してください。';
-    const analysis = await analyzeFileWithGemini({
-      geminiFileName: fileRow.gemini_file_name,
-      prompt: requestPrompt,
-      mimeType: mimeType || fileRow.mime_type || undefined,
-    });
+    const resolvedMime = mimeType || fileRow.mime_type || 'application/octet-stream';
+
+    // File Search store paths (fileSearchStores/...) cannot be used as fileUri.
+    // Try to download from Supabase Storage and analyze inline instead.
+    const isFileSearchPath = String(fileRow.gemini_file_name || '').startsWith('fileSearchStores/');
+
+    let analysis;
+    if (isFileSearchPath) {
+      // Look up storage info for this file
+      const { data: fileDetail } = await admin
+        .from('file_store_files')
+        .select('storage_bucket, storage_path')
+        .eq('id', fileRow.id)
+        .maybeSingle();
+
+      const bucket = fileDetail?.storage_bucket || 'gemini-upload-cache';
+      const storagePath = fileDetail?.storage_path || '';
+
+      if (storagePath) {
+        const { data: blob, error: dlError } = await admin.storage.from(bucket).download(storagePath);
+        if (dlError || !blob) {
+          respond(res, 400, { error: `ファイルのダウンロードに失敗しました: ${dlError?.message || '不明なエラー'}` });
+          return;
+        }
+        const arrayBuf = await blob.arrayBuffer();
+        const buffer = Buffer.from(arrayBuf);
+        analysis = await analyzeInlineMediaWithGemini({
+          buffer,
+          mimeType: resolvedMime,
+          prompt: requestPrompt,
+        });
+      } else {
+        respond(res, 400, { error: 'ストレージパスが見つかりません。ファイルを再アップロードしてください。' });
+        return;
+      }
+    } else {
+      analysis = await analyzeFileWithGemini({
+        geminiFileName: fileRow.gemini_file_name,
+        prompt: requestPrompt,
+        mimeType: resolvedMime,
+      });
+    }
 
     respond(res, 200, {
       result: {
