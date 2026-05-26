@@ -42,8 +42,6 @@ sis dialog summarises the selected media in Japanese and surfaces the underlying
 
 The local fallback (when Supabase credentials are omitted) ships with a demo account:
 
-- **Email:** `30.sc350@gmail.com`
-- **Password:** `12341234`
 
 When running against Supabase, create an auth user with the same credentials and execute `supabase/seed.sql` so the corresponding staff profile is provisioned automatically.
 
